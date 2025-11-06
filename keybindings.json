@@ -20,10 +20,10 @@
     },
     {
         "key": "ctrl+u",
-        "command": "workbench.action.quickOpen",
+        "command": "workbench.action.quickOpen"
     },
     {
         "key": "ctrl+shift+m",
-        "command": "workbench.action.tasks.build",
+        "command": "workbench.action.tasks.build"
     }
 ]
