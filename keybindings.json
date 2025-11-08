@@ -25,5 +25,23 @@
     {
         "key": "ctrl+shift+m",
         "command": "workbench.action.tasks.build"
+    },
+    {
+        "key": "ctrl+tab",
+        "command": "workbench.action.nextPanelView",
+        "when": "panelFocus"
+    },
+    {
+        "key": "ctrl+shift+tab",
+        "command": "workbench.action.previousPanelView",
+        "when": "panelFocus"
+    },
+    {
+        "key": "ctrl+[",
+        "command": "workbench.action.navigateBack"
+    },
+    {
+        "key": "ctrl+]",
+        "command": "workbench.action.navigateForward"
     }
 ]

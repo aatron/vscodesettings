@@ -38,18 +38,12 @@
         "editor.wordHighlightStrongBackground": "#152A2A80",
         "editor.findMatchBackground": "#1E3A3A80",
         "editor.findMatchHighlightBackground": "#152A2A80",
-        
-        // Diff editor colors (for suggested changes) - keep green/teal
         "diffEditor.insertedTextBackground": "#264A4A40",
         "diffEditor.removedTextBackground": "#4A2A2A40",
         "diffEditor.insertedLineBackground": "#264A4A20",
         "diffEditor.removedLineBackground": "#4A2A2A20",
-        
-        // Cursor line highlight - use BLUE to distinguish from green suggested changes
         "editor.lineHighlightBackground": "#3D5A8060",
         "editor.hoverHighlightBackground": "#3D5A8040",
-        
-        // Button colors for better readability
         "button.background": "#264A4A",
         "button.foreground": "#E0E0E0",
         "button.hoverBackground": "#2D5A5A",
@@ -133,8 +127,8 @@
               "punctuation.definition.comment"
             ],
             "settings": {
-              "foreground": "#7A8899",   // pick any brighter neutral you like
-              "fontStyle": "italic"      // drop this if you prefer normal text
+              "foreground": "#7A8899",
+              "fontStyle": "italic"
             }
           }        
         ]
