@@ -9,7 +9,6 @@
 - Error Lens
 - Filter Lens
 - Prettier
-- REST Client
 
 ## Rust extensions
 

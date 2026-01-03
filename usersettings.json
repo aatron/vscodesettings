@@ -134,6 +134,12 @@
         ]
       }
     },
-    "workbench.colorTheme": "Abyss"
+    "workbench.colorTheme": "Abyss",
+
+  "omnisharp.useModernNet": true,
+  "omnisharp.monoPath": "",
+  "omnisharp.enableMsBuildLoadProjectsOnDemand": false,
+  "omnisharp.sdkPath": "C:\\Program Files\\dotnet",
+  "omnisharp.sdkVersion": "10.0.101"
   }
   
