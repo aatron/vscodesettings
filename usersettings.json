@@ -140,6 +140,8 @@
   "omnisharp.monoPath": "",
   "omnisharp.enableMsBuildLoadProjectsOnDemand": false,
   "omnisharp.sdkPath": "C:\\Program Files\\dotnet",
-  "omnisharp.sdkVersion": "10.0.101"
+  "omnisharp.sdkVersion": "10.0.101",
+  "claudeCode.preferredLocation": "panel",
+  "git.detectWorktrees": true
   }
   
