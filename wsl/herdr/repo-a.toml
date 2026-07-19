@@ -1,0 +1,16 @@
+# Worktree auto-layout for repo "repo-a".
+# Save in the worktrees/ subdir of:  herdr plugin config-dir cloudmanic.herdr-plus
+# One file per repo. The script's ensure_layout() auto-creates any that are missing,
+# so this is just a sample / the one you can pre-place.
+#
+# The notes tab opens the shared notes file (path stored in ../.notespath).
+# The claude tab chooses its prompt from the worktree path: development vs review.
+repo = "repo-a"
+
+[[tabs]]
+name = "notes"
+command = 'micro "$(cat ../.notespath)"'
+
+[[tabs]]
+name = "claude"
+command = 'case "$PWD" in */development/*) claude "$(cat ../.plan.md)" ;; */review/*) claude "$(cat ../.review.md)" ;; *) claude ;; esac'
