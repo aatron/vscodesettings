@@ -4,9 +4,10 @@
 # Create a multi-repo herdr worktree structure for an Azure DevOps story.
 # Two modes: development and review.
 #
-# Tabs are NOT created here. They are driven declaratively by herdr-plus
-# Worktree Auto-Layout (worktree-layout.toml, installed as repo = "*").
-# This script only creates worktrees + sidecar files.
+# Tabs come from herdr-plus Worktree Auto-Layout (worktree-layout.toml,
+# repo = "*"): notes, then "claude" + "bash" at each worktree root. After
+# create, this script renames claude/bash to "{repo} claude" / "{repo} bash"
+# (layouts cannot interpolate the repo name). Also creates worktrees + sidecars.
 #
 # Git behavior on create:
 #   development -> fetch origin, then create the new branch
@@ -58,7 +59,35 @@ if [[ ! -t 0 ]]; then
 fi
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing tool: $1" >&2; exit 1; }; }
-need herdr; need git; need gum
+need herdr; need git; need gum; need jq
+
+# Wait for worktree auto-layout (notes + claude + bash), then rename
+# claude/bash to "{repo} …". Notes keeps its layout name.
+label_repo_tabs() {
+  local ws="$1" repo="$2"
+  local deadline=$((SECONDS + 20))
+  local notes_tab="" claude_tab="" bash_tab="" json
+  while (( SECONDS < deadline )); do
+    json="$(herdr tab list --workspace "$ws" 2>/dev/null || true)"
+    notes_tab="$(jq -r --arg ws "$ws" \
+      '.result.tabs[]? | select(.workspace_id==$ws and .label=="notes") | .tab_id' \
+      <<<"$json" | head -n1)"
+    claude_tab="$(jq -r --arg ws "$ws" \
+      '.result.tabs[]? | select(.workspace_id==$ws and .label=="claude") | .tab_id' \
+      <<<"$json" | head -n1)"
+    bash_tab="$(jq -r --arg ws "$ws" \
+      '.result.tabs[]? | select(.workspace_id==$ws and .label=="bash") | .tab_id' \
+      <<<"$json" | head -n1)"
+    if [[ -n "$notes_tab" && -n "$claude_tab" && -n "$bash_tab" ]]; then
+      herdr tab rename "$claude_tab" "${repo} claude"
+      herdr tab rename "$bash_tab" "${repo} bash"
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "WARNING: timed out waiting for notes/claude/bash tabs in workspace ${ws}" >&2
+  return 1
+}
 
 ask() { gum input --prompt "$1 > " --placeholder "$2"; }
 
@@ -110,23 +139,37 @@ default_branch() {
 
 # development: new branch from the latest default branch.
 make_worktree_new() {
-  local repo="$1" branch="$2" src="${SRC_ROOT}/${repo}"
+  local repo="$1" branch="$2" src="${SRC_ROOT}/${repo}" out ws
   [[ -d "$src/.git" || -f "$src/.git" ]] || {
     echo "missing clone: $src (set SRC_ROOT or clone the repo there)" >&2; exit 1; }
   git -C "$src" fetch --prune origin
   local def; def="$(default_branch "$src")"
-  herdr worktree create --cwd "$src" --branch "$branch" --base "origin/${def}" \
-      --path "${STORY_DIR}/${repo}" --label "$repo" --no-focus
+  out="$(herdr worktree create --cwd "$src" --branch "$branch" --base "origin/${def}" \
+      --path "${STORY_DIR}/${repo}" --label "${ID}_${SLUG}/${repo}" --no-focus)"
+  ws="$(jq -r '.result.workspace.workspace_id // empty' <<<"$out")"
+  [[ -n "$ws" ]] || {
+    echo "herdr worktree create failed for ${repo}:" >&2
+    echo "$out" >&2
+    exit 1
+  }
+  label_repo_tabs "$ws" "$repo" || true
 }
 
 # review: check out an existing branch at its latest remote state.
 make_worktree_existing() {
-  local repo="$1" branch="$2" src="${SRC_ROOT}/${repo}"
+  local repo="$1" branch="$2" src="${SRC_ROOT}/${repo}" out ws
   [[ -d "$src/.git" || -f "$src/.git" ]] || {
     echo "missing clone: $src (set SRC_ROOT or clone the repo there)" >&2; exit 1; }
   git -C "$src" fetch --prune origin
-  herdr worktree create --cwd "$src" --branch "$branch" --base "origin/${branch}" \
-      --path "${STORY_DIR}/${repo}" --label "$repo" --no-focus
+  out="$(herdr worktree create --cwd "$src" --branch "$branch" --base "origin/${branch}" \
+      --path "${STORY_DIR}/${repo}" --label "${ID}_${SLUG}/${repo}" --no-focus)"
+  ws="$(jq -r '.result.workspace.workspace_id // empty' <<<"$out")"
+  [[ -n "$ws" ]] || {
+    echo "herdr worktree create failed for ${repo}:" >&2
+    echo "$out" >&2
+    exit 1
+  }
+  label_repo_tabs "$ws" "$repo" || true
 }
 
 # --- shared inputs ---------------------------------------------------------

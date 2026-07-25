@@ -3,6 +3,8 @@
 # per-repo toml unless you want a repo-specific override.
 #
 # Tabs open at the worktree root when herdr creates/opens a worktree.
+# On create, make-worktree.sh renames claude/bash to "{repo} claude" /
+# "{repo} bash" (herdr-plus layouts cannot interpolate the repo name).
 repo = "*"
 
 [[tabs]]
@@ -10,12 +12,8 @@ name = "notes"
 command = 'micro "$(cat ../.notespath)"'
 
 [[tabs]]
-name = "Claude1"
+name = "claude"
 command = "claude"
 
 [[tabs]]
-name = "cursor"
-command = "agent"
-
-[[tabs]]
-name = "terminal"
+name = "bash"

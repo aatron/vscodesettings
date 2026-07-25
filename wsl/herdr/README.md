@@ -104,6 +104,14 @@ These belong on the top-level `[ui]` table. Putting them under `[ui.sidebar.agen
 [ui]
 agent_panel_sort = "spaces"                 # or "priority"
 show_agent_labels_on_pane_borders = true
+sidebar_start_collapsed
+```
+
+### Display the folder name on the left-hand panel
+
+```
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace"], ["branch", "git_status"]]
 ```
 
 ### Agent Usage sidebar (Herdr 0.7.5+)
@@ -225,14 +233,15 @@ Pro/Max only; `rate_limits` appear after the first API reply in a session. Send 
 
 Tabs come from **one** herdr-plus Worktree Auto-Layout file with `repo = "*"`. You do **not** need a toml per repository unless you want a repo-specific override.
 
-Layout applied to every created worktree:
+Layout applied to every created/opened worktree (at that repo's worktree root):
 
-| Tab | What it runs |
-|-----|----------------|
+| Tab (layout name) | What it runs |
+|-------------------|--------------|
 | notes | `micro` on the story notes file (via `../.notespath`) |
-| Claude1 | `claude` at the worktree root |
-| cursor | `agent` (Cursor Agent CLI) at the worktree root |
-| terminal | bare shell at the worktree root |
+| claude | `claude` |
+| bash | bare shell |
+
+On **create** via `make-worktree.sh`, the claude/bash tabs are renamed to `{repo-name} claude` and `{repo-name} bash` (herdr-plus layouts cannot interpolate the repo name). Notes stays `notes`. Re-opening an existing worktree keeps the layout names `notes` / `claude` / `bash`.
 
 ## Daily use
 
@@ -244,7 +253,7 @@ Layout applied to every created worktree:
 
 ## Dry run (home, three repos)
 
-Goal: confirm notes + three worktrees are created under `[worktrees].directory` with the four tabs above.
+Goal: confirm notes + three worktrees are created under `[worktrees].directory` with per-repo claude/bash tabs.
 
 1. Finish **Installation set-up**, set `SRC_ROOT` in `worktree-make.sh`, and set `[worktrees].directory` in `config.toml`.
 2. Clone (or place) three git repos under `SRC_ROOT`, e.g.:
@@ -259,6 +268,6 @@ Goal: confirm notes + three worktrees are created under `[worktrees].directory` 
    * Story dir: `$HOME/source/worktrees/development/99999_dry-run/`
    * `.notespath` pointing at the notes file
    * Worktrees: `repo-a/`, `repo-b/`, `repo-c/` on branch `feature/aaron/99999-dry-run`
-   * Each worktree workspace opens with notes / Claude1 / cursor / terminal
+   * Each worktree workspace opens with tabs `notes`, `{repo} claude`, and `{repo} bash`
 
 Cleanup after the dry run (from each primary clone): `git worktree list` then `git worktree remove <path>` as needed, and delete the story folder/notes under `[worktrees].directory`.
