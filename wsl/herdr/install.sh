@@ -189,7 +189,36 @@ install_file() {
     return
   fi
   cp "$src" "$dest"
+  # Windows checkouts can leave CRLF; strip so shebangs work in WSL.
+  if [[ "$dest" == *.sh ]]; then
+    sed -i 's/\r$//' "$dest"
+  fi
   echo "-> installed: ${dest}"
+}
+
+# Ensure a script path is executable and Unix-LF (safe for files we symlink to).
+normalize_shell_script() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  sed -i 's/\r$//' "$f"
+  chmod +x "$f"
+}
+
+# herdr-plus seeds examples with macOS `open`. On Linux/WSL those flash-fail.
+# Rewrite to the cross-platform {{opener}} template helper.
+fix_example_openers() {
+  local dir="$1" f
+  [[ -d "$dir" ]] || return 0
+  for f in "$dir"/*.toml; do
+    [[ -f "$f" ]] || continue
+    case "$(basename "$f")" in
+      new-worktree-*.toml) continue ;;
+    esac
+    if grep -qE 'command = "open ' "$f"; then
+      sed -i 's/command = "open /command = "{{opener}} /g' "$f"
+      echo "-> opener fix: ${f}"
+    fi
+  done
 }
 
 # Claude Code native statusLine for 5h/7d (unrelated to Herdr Agent Usage).
@@ -275,17 +304,20 @@ mkdir -p "$QA_DIR" "$LAYOUT_DIR"
 
 echo
 echo "=== 3/4 Worktree workflow files ==="
+normalize_shell_script "${SCRIPT_DIR}/worktree-make.sh"
+normalize_shell_script "${SCRIPT_DIR}/worktree-launch.sh"
 ln -sfn "${SCRIPT_DIR}/worktree-make.sh" "$TARGET_SCRIPT"
-chmod +x "${SCRIPT_DIR}/worktree-make.sh"
 echo "-> script:  ${TARGET_SCRIPT} -> ${SCRIPT_DIR}/worktree-make.sh"
 
 ln -sfn "${SCRIPT_DIR}/worktree-launch.sh" "$TARGET_LAUNCH"
-chmod +x "${SCRIPT_DIR}/worktree-launch.sh"
 echo "-> launch:  ${TARGET_LAUNCH} -> ${SCRIPT_DIR}/worktree-launch.sh"
 
 install_file "${SCRIPT_DIR}/new-worktree-dev.toml"    "${QA_DIR}/new-worktree-dev.toml"
 install_file "${SCRIPT_DIR}/new-worktree-review.toml" "${QA_DIR}/new-worktree-review.toml"
 install_file "${SCRIPT_DIR}/worktree-layout.toml"     "${LAYOUT_DIR}/worktree-layout.toml"
+
+# Seeded herdr-plus examples use macOS `open`; rewrite to {{opener}} on Linux/WSL.
+fix_example_openers "$QA_DIR"
 
 echo
 echo "=== 4/4 Claude Code status line (5h / 7d) ==="
