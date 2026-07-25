@@ -10,13 +10,13 @@ On each machine (home and work), clone this repo in WSL, then:
 
 ```
 cd /path/to/vscodesettings/wsl/herdr
-chmod +x install.sh worktree-make.sh
+chmod +x install.sh worktree-make.sh claude-statusline.sh
 ./install.sh
 ```
 
-`install.sh` will (**never overwrites an existing `config.toml`**):
+`install.sh` will (**idempotent**; never overwrites an existing `config.toml`):
 
-1. Install CLIs if missing: [herdr](https://herdr.dev/) (≥ 0.7.4), `gum`, `git`, `micro`, `claude`, `agent`; ensure `~/bin` and `~/.local/bin` are on `PATH`
+1. Install CLIs if missing: [herdr](https://herdr.dev/) (≥ 0.7.4), `gum`, `git`, `micro`, `jq`, `claude`, `agent`; ensure `~/bin` and `~/.local/bin` are on `PATH`
 2. If `~/.config/herdr/config.toml` is missing, create it with the documented default:
    `herdr --default-config > ~/.config/herdr/config.toml`
 3. Install plugins:
@@ -27,6 +27,7 @@ chmod +x install.sh worktree-make.sh
    * `new-worktree-dev.toml` → **New Dev Worktree**
    * `new-worktree-review.toml` → **New Review Worktree**
 6. Copy `worktree-layout.toml` into herdr-plus `worktrees/` (wildcard layout for every repo)
+7. Claude Code native status line for 5h / 7d (`~/.claude/statusline-rate-limits.sh` + `settings.json` merge; skips if you already have a custom `statusLine`)
 
 Then edit machine-local values at the top of `worktree-make.sh`:
 
@@ -143,22 +144,35 @@ Agent Usage **cannot** draw on Herdr’s global bottom status bar (plugins have 
 |---------|----------------|
 | Agent sidebar `$limit` / `$provider` | Shortest remaining plan window for the focused Claude pane (needs the sidebar rows above) |
 | **ctrl+shift+u** → limits pane | Full Claude 5h / 7d (and other providers) account windows |
-| Claude Code status line (bottom of the Claude pane) | Optional; also feeds the plugin’s Claude utilization cache for better 5h/7d + toasts |
+| Claude Code status line (bottom of the Claude pane) | Native Claude footer (installed by `install.sh` — unrelated to Herdr) |
 
-#### Claude Code `statusLine` (manual — Claude settings, not Herdr `config.toml`)
+On demand inside Claude: `/usage` shows the full plan windows without a persistent footer.
 
-Resolve the plugin root (`herdr plugin list`) and add this to Claude Code settings (usually `~/.claude/settings.json`). Prefer chaining if you already have a `statusLine` command; `usagebar.setup` also prints a ready-to-paste path:
+#### Claude Code status line (native — applied by `install.sh`)
 
-```
-{
-  "statusLine": {
-    "type": "command",
-    "command": "bash /path/to/herdr-agent-usage/bin/run-statusline.sh"
-  }
-}
-```
+Claude Code has no built-in “always show 5h/7d” toggle. The idiomatic footer is a `statusLine` command that reads session JSON from stdin (including native `rate_limits`). Docs: [Customize your status line](https://code.claude.com/docs/en/statusline).
 
-Replace `/path/to/herdr-agent-usage` with the plugin root from `herdr plugin list`.
+`install.sh` does this automatically and idempotently (re-runs are safe):
+
+1. Installs `jq` (apt) if missing.
+2. Copies `claude-statusline.sh` → `~/.claude/statusline-rate-limits.sh` (refreshes when the source changes).
+3. Merges into `~/.claude/settings.json`:
+
+   ```json
+   {
+     "statusLine": {
+       "type": "command",
+       "command": "/home/<you>/.claude/statusline-rate-limits.sh"
+     }
+   }
+   ```
+
+   - Creates `settings.json` if missing.
+   - Adds `statusLine` when absent.
+   - Refreshes the command when it already points at the managed script.
+   - **Leaves a custom `statusLine.command` unchanged** (prints a note; chain the managed script yourself if you want both).
+
+Pro/Max only; `rate_limits` appear after the first API reply in a session. Send a message (or resume) so the footer updates; `/status` confirms settings loaded. Independent of Herdr Agent Usage (sidebar / limits pane / toasts).
 
 ## Apply settings
 
@@ -169,13 +183,12 @@ Replace `/path/to/herdr-agent-usage` with the plugin root from `herdr plugin lis
    ```
 
    Paste any sidebar / toast / key snippets it prints if you have not already added them.
-2. Add the Claude Code `statusLine` block above if you want 5h / 7d cache + toasts.
-3. Reload Herdr after any `config.toml` edit:
+2. Reload Herdr after any `config.toml` edit:
 
    ```
    herdr server reload-config
    ```
-4. Optional: install agent integrations from the Settings menu or CLI for better session matching.
+3. Optional: install agent integrations from the Settings menu or CLI for better session matching.
 
 ### Settings menu
 

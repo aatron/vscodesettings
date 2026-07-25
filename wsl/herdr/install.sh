@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
 # install.sh — wire this folder's Herdr worktree workflow into the local machine.
-# Run from WSL.
+# Run from WSL. Safe to re-run (idempotent).
 #
 # What it does (never overwrites an existing ~/.config/herdr/config.toml):
-#   1. Installs CLI prerequisites: herdr, gum, git, micro, claude, agent
+#   1. Installs CLI prerequisites: herdr, gum, git, micro, jq, claude, agent
 #   2. Creates default config.toml if missing (herdr --default-config)
 #   3. Installs herdr plugins (herdr-plus, herdr-agent-usage)
 #   4. Symlinks worktree-make.sh -> ~/bin/make-worktree.sh
 #   5. Installs quick-action TOMLs (dev + review) into herdr-plus
 #   6. Installs the wildcard worktree auto-layout (repo = "*")
+#   7. Claude Code native statusLine for 5h/7d (managed script + settings merge)
 #
 # Manual config.toml edits are listed at the end and in README.md.
 #
@@ -19,6 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${HOME}/bin"
 LOCAL_BIN="${HOME}/.local/bin"
 TARGET_SCRIPT="${BIN_DIR}/make-worktree.sh"
+CLAUDE_DIR="${HOME}/.claude"
+CLAUDE_STATUSLINE_SCRIPT="${CLAUDE_DIR}/statusline-rate-limits.sh"
+CLAUDE_SETTINGS="${CLAUDE_DIR}/settings.json"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -63,7 +67,7 @@ ensure_apt_pkgs() {
     fi
   done
   if ((${#pkgs[@]} == 0)); then
-    echo "-> apt: git/micro/curl already present"
+    echo "-> apt: already present ($*)"
     return
   fi
   echo "-> apt: installing ${pkgs[*]}"
@@ -178,14 +182,77 @@ install_plugin() {
 
 install_file() {
   local src="$1" dest="$2"
+  if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+    echo "-> unchanged: ${dest}"
+    return
+  fi
   cp "$src" "$dest"
   echo "-> installed: ${dest}"
 }
 
+# Claude Code native statusLine for 5h/7d (unrelated to Herdr Agent Usage).
+# Idempotent: refreshes managed script; only writes statusLine when missing or
+# already pointing at this managed script (never replaces a custom command).
+ensure_claude_statusline() {
+  local src="${SCRIPT_DIR}/claude-statusline.sh"
+  local cmd="${CLAUDE_STATUSLINE_SCRIPT}"
+  local current="" tmp
+
+  [[ -f "$src" ]] || { echo "missing ${src}" >&2; exit 1; }
+  have jq || { echo "jq is required for Claude statusLine setup" >&2; exit 1; }
+
+  mkdir -p "$CLAUDE_DIR"
+  install_file "$src" "$CLAUDE_STATUSLINE_SCRIPT"
+  chmod +x "$CLAUDE_STATUSLINE_SCRIPT"
+
+  if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
+    jq -n --arg cmd "$cmd" \
+      '{statusLine: {type: "command", command: $cmd}}' > "$CLAUDE_SETTINGS"
+    echo "-> claude settings: created ${CLAUDE_SETTINGS} with statusLine"
+    return
+  fi
+
+  if ! jq empty "$CLAUDE_SETTINGS" 2>/dev/null; then
+    echo "-> claude settings: invalid JSON at ${CLAUDE_SETTINGS} — left unchanged" >&2
+    return
+  fi
+
+  current="$(jq -r '.statusLine.command // empty' "$CLAUDE_SETTINGS")"
+  if [[ -z "$current" ]]; then
+    tmp="$(mktemp)"
+    jq --arg cmd "$cmd" \
+      '.statusLine = {type: "command", command: $cmd}' \
+      "$CLAUDE_SETTINGS" > "$tmp"
+    mv "$tmp" "$CLAUDE_SETTINGS"
+    echo "-> claude settings: added statusLine -> ${cmd}"
+    return
+  fi
+
+  case "$current" in
+    "$cmd"|"~/.claude/statusline-rate-limits.sh"|"$HOME/.claude/statusline-rate-limits.sh")
+      tmp="$(mktemp)"
+      jq --arg cmd "$cmd" \
+        '.statusLine = {type: "command", command: $cmd}' \
+        "$CLAUDE_SETTINGS" > "$tmp"
+      if cmp -s "$tmp" "$CLAUDE_SETTINGS"; then
+        rm -f "$tmp"
+        echo "-> claude settings: statusLine already set -> ${cmd}"
+      else
+        mv "$tmp" "$CLAUDE_SETTINGS"
+        echo "-> claude settings: refreshed statusLine -> ${cmd}"
+      fi
+      ;;
+    *)
+      echo "-> claude settings: left existing statusLine unchanged: ${current}"
+      echo "   (managed script is at ${cmd}; chain it from your custom statusLine if desired)"
+      ;;
+  esac
+}
+
 # ===========================================================================
-echo "=== 1/3 Prerequisites ==="
+echo "=== 1/4 Prerequisites ==="
 ensure_path_dirs
-ensure_apt_pkgs curl git micro
+ensure_apt_pkgs curl git micro jq
 ensure_herdr
 ensure_herdr_config
 ensure_gum
@@ -193,7 +260,7 @@ ensure_claude
 ensure_agent
 
 echo
-echo "=== 2/3 Herdr plugins ==="
+echo "=== 2/4 Herdr plugins ==="
 install_plugin "cloudmanic/herdr-plus"
 install_plugin "senna-lang/herdr-agent-usage"
 
@@ -205,7 +272,7 @@ echo "herdr-plus config: ${PLUGIN_DIR}"
 mkdir -p "$QA_DIR" "$LAYOUT_DIR"
 
 echo
-echo "=== 3/3 Worktree workflow files ==="
+echo "=== 3/4 Worktree workflow files ==="
 ln -sfn "${SCRIPT_DIR}/worktree-make.sh" "$TARGET_SCRIPT"
 chmod +x "${SCRIPT_DIR}/worktree-make.sh"
 echo "-> script:  ${TARGET_SCRIPT} -> ${SCRIPT_DIR}/worktree-make.sh"
@@ -215,8 +282,13 @@ install_file "${SCRIPT_DIR}/new-worktree-review.toml" "${QA_DIR}/new-worktree-re
 install_file "${SCRIPT_DIR}/worktree-layout.toml"     "${LAYOUT_DIR}/worktree-layout.toml"
 
 echo
+echo "=== 4/4 Claude Code status line (5h / 7d) ==="
+ensure_claude_statusline
+
+echo
 echo "=== Automated install finished ==="
 echo "  (Existing config.toml is never overwritten; defaults are written only if missing.)"
+echo "  (Claude statusLine is managed under ~/.claude/; custom statusLine commands are left alone.)"
 echo
 echo "Manual next steps — see README.md for full snippets:"
 echo "  1. Edit machine paths at the top of:"
@@ -230,12 +302,8 @@ echo "       herdr plugin action invoke usagebar.setup"
 echo "     Paste any sidebar/toast/key snippets it prints if not already in config."
 echo "  4. Optional toast delivery — prefer pasting the README [ui.toast] block"
 echo "     instead of usagebar.enable-toast (that command can append to config.toml)."
-echo "  5. Claude global 5h/7d usage: add Claude statusLine to ~/.claude/settings.json"
-echo "     (see README; path from herdr plugin list / usagebar.setup)."
-echo "     Note: Agent Usage cannot draw on Herdr's global bottom bar — use the"
-echo "     agent sidebar \$limit row and ctrl+shift+u limits pane instead."
-echo "  6. herdr server reload-config"
-echo "  7. Dry-run: prefix+down -> New Dev Worktree"
+echo "  5. herdr server reload-config"
+echo "  6. Dry-run: prefix+down -> New Dev Worktree"
 echo
 echo "If 'claude' or 'agent' is missing in a new terminal, source ~/.bashrc or reopen WSL."
 echo "Primary clones must exist under SRC_ROOT/<repo-name>."
@@ -243,6 +311,6 @@ echo
 herdr plugin list
 echo
 echo "CLI check:"
-for c in herdr gum git micro claude agent; do
+for c in herdr gum git micro jq claude agent; do
   printf "  %-8s %s\n" "$c" "$(command -v "$c" 2>/dev/null || echo MISSING)"
 done
