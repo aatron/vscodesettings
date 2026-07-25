@@ -5,8 +5,8 @@
 # Two modes: development and review.
 #
 # Tabs are NOT created here. They are driven declaratively by herdr-plus
-# Worktree Auto-Layout files in the plugin's worktrees/ dir (auto-generated
-# by ensure_layout below). This script only creates worktrees + sidecar files.
+# Worktree Auto-Layout (worktree-layout.toml, installed as repo = "*").
+# This script only creates worktrees + sidecar files.
 #
 # Git behavior on create:
 #   development -> fetch origin, then create the new branch
@@ -20,7 +20,6 @@
 #       <id>_<slug>.txt              <- notes (sibling of the story folder)
 #       <id>_<slug>/
 #           .notespath               <- absolute path to the notes file
-#           .plan.md  |  .review.md  <- per-story agent prompt (by type)
 #           <repo>/                  <- git worktree
 #           <repo>/ ...
 #
@@ -32,8 +31,6 @@ set -euo pipefail
 SRC_ROOT="$HOME/src"                # where your primary repo clones live
 WORKTREE_ROOT="$HOME/worktrees"     # base dir; <type>/... is created under it
 BRANCH_PREFIX="feature/aaron"       # branch name only: feature/aaron/<id>-<slug>
-EDITOR_CMD="micro"                  # editor used by the notes tab (in the layout file)
-AGENT_CMD="claude"                  # agent used by the claude tab (in the layout file)
 
 # ===========================================================================
 # VERIFY ONCE AGAINST YOUR herdr BUILD
@@ -53,8 +50,6 @@ need herdr; need git; need gum
 
 ask() { gum input --prompt "$1 > " --placeholder "$2"; }
 
-LAYOUT_DIR="$(herdr plugin config-dir cloudmanic.herdr-plus)/worktrees"
-
 # Resolve a repo's default branch (main/master/...), locally if possible.
 default_branch() {
   local src="$1" d
@@ -67,33 +62,13 @@ default_branch() {
   echo "${d:-main}"
 }
 
-# Write a per-repo auto-layout file once (skip if it already exists).
-# Tabs: notes (first) + claude. The notes tab reads ../.notespath; the claude
-# tab picks its prompt from the path (development vs review).
-ensure_layout() {
-  local repo="$1" f="${LAYOUT_DIR}/${repo}.toml"
-  mkdir -p "$LAYOUT_DIR"
-  [[ -f "$f" ]] && return
-  cat > "$f" <<'EOF'
-repo = "__REPO__"
-
-[[tabs]]
-name = "notes"
-command = 'micro "$(cat ../.notespath)"'
-
-[[tabs]]
-name = "claude"
-command = 'case "$PWD" in */development/*) claude "$(cat ../.plan.md)" ;; */review/*) claude "$(cat ../.review.md)" ;; *) claude ;; esac'
-EOF
-  sed -i "s/__REPO__/${repo}/" "$f"
-}
-
 # development: new branch from the latest default branch.
 make_worktree_new() {
   local repo="$1" branch="$2" src="${SRC_ROOT}/${repo}"
-  ensure_layout "$repo"
-  git -C "$src" fetch --prune origin                 # pull latest refs
-  local def; def="$(default_branch "$src")"          # e.g. main
+  [[ -d "$src/.git" || -f "$src/.git" ]] || {
+    echo "missing clone: $src (set SRC_ROOT or clone the repo there)" >&2; exit 1; }
+  git -C "$src" fetch --prune origin
+  local def; def="$(default_branch "$src")"
   herdr worktree create --cwd "$src" --branch "$branch" --base "origin/${def}" \
       --path "${STORY_DIR}/${repo}" --label "$repo" --no-focus
 }
@@ -101,7 +76,8 @@ make_worktree_new() {
 # review: check out an existing branch at its latest remote state.
 make_worktree_existing() {
   local repo="$1" branch="$2" src="${SRC_ROOT}/${repo}"
-  ensure_layout "$repo"
+  [[ -d "$src/.git" || -f "$src/.git" ]] || {
+    echo "missing clone: $src (set SRC_ROOT or clone the repo there)" >&2; exit 1; }
   git -C "$src" fetch --prune origin
   herdr worktree create --cwd "$src" --branch "$branch" --base "origin/${branch}" \
       --path "${STORY_DIR}/${repo}" --label "$repo" --no-focus
@@ -128,28 +104,11 @@ echo "-> branch: $BRANCH"
 # DEVELOPMENT
 # ===========================================================================
 if [[ "$TYPE" == "development" ]]; then
-  REPOS="$(ask 'Repos (csv)' 'repo-a,repo-b')"
+  REPOS="$(ask 'Repos (csv)' 'repo-a,repo-b,repo-c')"
   [[ -n "$REPOS" ]] || { echo "repos required" >&2; exit 1; }
 
-  PLAN="${STORY_DIR}/.plan.md"
-
   # ----- AZURE PLACEHOLDER (development) -----------------------------------
-  # At WORK, replace this block with a real az call that writes the story
-  # description into $PLAN. Descriptions are HTML, so strip tags. Example:
-  #
-  #   {
-  #     echo "# Plan for story ${ID} (${SLUG})"; echo
-  #     az boards work-item show --id "$ID" \
-  #        --query "fields.\"System.Description\"" -o tsv \
-  #        | pandoc -f html -t plain
-  #   } > "$PLAN"
-  #
-  cat > "$PLAN" <<EOF
-# Plan for story ${ID} (${SLUG})
-
-TODO: replace with the Azure DevOps story description (see the az command in
-make-worktree.sh). Edit this prompt and add context before sending to ${AGENT_CMD}.
-EOF
+  # At WORK, you can replace prompts / fetch story text via az boards here.
   # -------------------------------------------------------------------------
 
   IFS=',' read -ra LIST <<< "$REPOS"
@@ -157,7 +116,7 @@ EOF
     repo="$(echo "$repo" | xargs)"; [[ -n "$repo" ]] || continue
     make_worktree_new "$repo" "$BRANCH"
   done
-  echo "OK development ready. Edit ${PLAN}, then run it in the ${AGENT_CMD} tab."
+  echo "OK development ready at ${STORY_DIR}"
 fi
 
 # ===========================================================================
@@ -180,14 +139,10 @@ if [[ "$TYPE" == "review" ]]; then
   cat > "$BRANCHES" <<EOF
 repo-a:feature/aaron/${ID}-${SLUG}
 repo-b:bugfix/${ID}-example
+repo-c:feature/aaron/${ID}-${SLUG}
 EOF
   echo "WARNING placeholder branches in ${BRANCHES} -- replace with az output at work."
   # -------------------------------------------------------------------------
-
-  cat > "${STORY_DIR}/.review.md" <<EOF
-Review the branch checked out in this repo for story ${ID}.
-Summarize the changes, flag bugs, risks, and missing tests, then output findings.
-EOF
 
   # One worktree per linked branch. Line format: <repo>:<branch>
   # NOTE: if one repo has several linked branches, give each a distinct --path
@@ -197,5 +152,5 @@ EOF
     [[ -n "$repo" && -n "$branch" ]] || continue
     make_worktree_existing "$repo" "$branch"
   done < "$BRANCHES"
-  echo "OK review ready -- one worktree per branch, each with a ${AGENT_CMD} review tab."
+  echo "OK review ready at ${STORY_DIR}"
 fi

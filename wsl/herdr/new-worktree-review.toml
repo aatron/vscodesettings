@@ -1,5 +1,5 @@
 # Review worktree launcher.
-# Save in the quick-actions/ subdir of:  herdr plugin config-dir cloudmanic.herdr-plus
+# Installed by install.sh into herdr-plus quick-actions/.
 name = "New Review Worktree"
 description = "Create review worktrees for each branch on a story"
 type = "command"

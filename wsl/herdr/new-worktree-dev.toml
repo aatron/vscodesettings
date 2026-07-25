@@ -1,5 +1,5 @@
 # Development worktree launcher.
-# Save in the quick-actions/ subdir of:  herdr plugin config-dir cloudmanic.herdr-plus
+# Installed by install.sh into herdr-plus quick-actions/.
 name = "New Dev Worktree"
 description = "Create development worktrees for a story"
 type = "command"

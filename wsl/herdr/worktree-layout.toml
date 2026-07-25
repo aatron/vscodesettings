@@ -1,0 +1,21 @@
+# Worktree auto-layout applied to every repo (wildcard).
+# Installed into herdr-plus worktrees/ by install.sh — you do NOT need a
+# per-repo toml unless you want a repo-specific override.
+#
+# Tabs open at the worktree root when herdr creates/opens a worktree.
+repo = "*"
+
+[[tabs]]
+name = "notes"
+command = 'micro "$(cat ../.notespath)"'
+
+[[tabs]]
+name = "Claude1"
+command = "claude"
+
+[[tabs]]
+name = "cursor"
+command = "agent"
+
+[[tabs]]
+name = "terminal"
