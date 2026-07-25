@@ -3,4 +3,5 @@
 name = "New Review Worktree"
 description = "Create review worktrees for each branch on a story"
 type = "command"
-command = '"$HOME/bin/make-worktree.sh" review </dev/tty'
+# herdr-plus leaves stdin as /dev/null; the script reattaches to the pane tty.
+command = '"$HOME/bin/make-worktree.sh" review'

@@ -44,7 +44,18 @@ TYPE="${1:-}"
 [[ "$TYPE" == "development" || "$TYPE" == "review" ]] || {
   echo "usage: $0 <development|review>" >&2; exit 1; }
 
-exec </dev/tty            # quick-action stdin is /dev/null; talk to the terminal
+# herdr-plus quick actions run with stdin = /dev/null. Prefer duplicating the
+# pane PTY from stdout (fd 1); fall back to the controlling tty.
+if [[ ! -t 0 ]]; then
+  if [[ -t 1 ]]; then
+    exec <&1
+  elif [[ -r /dev/tty ]]; then
+    exec </dev/tty
+  else
+    echo "no tty available for prompts (run from a herdr pane or terminal)" >&2
+    exit 1
+  fi
+fi
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing tool: $1" >&2; exit 1; }; }
 need herdr; need git; need gum
@@ -71,8 +82,10 @@ resolve_worktree_root() {
     ' "$cfg")"
   fi
   [[ -z "$dir" ]] && dir="~/source/worktrees"
+  # Escape ~ in ${var#pat}: an unescaped ~/ in the pattern is tilde-expanded to
+  # $HOME/, so "${dir#~/}" would not strip a literal "~/..." prefix.
   case "$dir" in
-    "~/"*) dir="${HOME}/${dir#~/}" ;;
+    "~/"*) dir="${HOME}/${dir#\~/}" ;;
     "~")   dir="${HOME}" ;;
   esac
   dir="${dir//\$HOME/$HOME}"

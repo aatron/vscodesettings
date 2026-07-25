@@ -3,4 +3,5 @@
 name = "New Dev Worktree"
 description = "Create development worktrees for a story"
 type = "command"
-command = '"$HOME/bin/make-worktree.sh" development </dev/tty'
+# herdr-plus leaves stdin as /dev/null; the script reattaches to the pane tty.
+command = '"$HOME/bin/make-worktree.sh" development'

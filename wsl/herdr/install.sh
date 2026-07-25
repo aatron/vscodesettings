@@ -79,11 +79,11 @@ ensure_herdr() {
   local ver=""
   if have herdr; then
     ver="$(herdr --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true)"
-    if [[ -n "$ver" ]] && version_ge "$ver" "0.7.4"; then
-      echo "-> herdr: ${ver} (>= 0.7.4)"
+    if [[ -n "$ver" ]] && version_ge "$ver" "0.7.5"; then
+      echo "-> herdr: ${ver} (>= 0.7.5)"
       return
     fi
-    echo "-> herdr: found ${ver:-unknown}, need >= 0.7.4 — upgrading"
+    echo "-> herdr: found ${ver:-unknown}, need >= 0.7.5 — upgrading"
   else
     echo "-> herdr: not found — installing"
   fi
@@ -302,8 +302,11 @@ echo "       herdr plugin action invoke usagebar.setup"
 echo "     Paste any sidebar/toast/key snippets it prints if not already in config."
 echo "  4. Optional toast delivery — prefer pasting the README [ui.toast] block"
 echo "     instead of usagebar.enable-toast (that command can append to config.toml)."
-echo "  5. herdr server reload-config"
-echo "  6. Dry-run: prefix+down -> New Dev Worktree"
+echo "  5. herdr config check   # fix any unknown keys before continuing"
+echo "  6. herdr server reload-config"
+echo "     (named sessions: herdr --session <name> server reload-config,"
+echo "      or session stop + reattach after a herdr upgrade)"
+echo "  7. Dry-run: prefix+down -> New Dev Worktree"
 echo
 echo "If 'claude' or 'agent' is missing in a new terminal, source ~/.bashrc or reopen WSL."
 echo "Primary clones must exist under SRC_ROOT/<repo-name>."

@@ -16,7 +16,7 @@ chmod +x install.sh worktree-make.sh claude-statusline.sh
 
 `install.sh` will (**idempotent**; never overwrites an existing `config.toml`):
 
-1. Install CLIs if missing: [herdr](https://herdr.dev/) (≥ 0.7.4), `gum`, `git`, `micro`, `jq`, `claude`, `agent`; ensure `~/bin` and `~/.local/bin` are on `PATH`
+1. Install CLIs if missing: [herdr](https://herdr.dev/) (≥ 0.7.5), `gum`, `git`, `micro`, `jq`, `claude`, `agent`; ensure `~/bin` and `~/.local/bin` are on `PATH`
 2. If `~/.config/herdr/config.toml` is missing, create it with the documented default:
    `herdr --default-config > ~/.config/herdr/config.toml`
 3. Install plugins:
@@ -96,7 +96,19 @@ command = "cloudmanic.herdr-plus.quick-actions"
 description = "herdr-plus: quick actions"
 ```
 
-### Agent Usage sidebar (Herdr 0.7.4+)
+### Agent panel / pane labels (under `[ui]`, not sidebar)
+
+These belong on the top-level `[ui]` table. Putting them under `[ui.sidebar.agents]` makes herdr warn `config.toml has unknown keys` (`herdr config check`).
+
+```
+[ui]
+agent_panel_sort = "spaces"                 # or "priority"
+show_agent_labels_on_pane_borders = true
+```
+
+### Agent Usage sidebar (Herdr 0.7.5+)
+
+Only `row_gap` / `rows` (and optional `rows_by_agent`) go here:
 
 ```
 [ui.sidebar.agents]
@@ -176,19 +188,30 @@ Pro/Max only; `rate_limits` appear after the first API reply in a session. Send 
 
 ## Apply settings
 
-1. Seed Agent Usage (resolves/builds the `usagebar` binary; prints paste snippets; does not rewrite herdr `config.toml`):
+1. Validate config after pasting snippets:
+
+   ```
+   herdr config check
+   ```
+
+   Fix any `unknown config key` lines before relying on keybinds or the sidebar.
+2. Seed Agent Usage (resolves/builds the `usagebar` binary; prints paste snippets; does not rewrite herdr `config.toml`):
 
    ```
    herdr plugin action invoke usagebar.setup
    ```
 
    Paste any sidebar / toast / key snippets it prints if you have not already added them.
-2. Reload Herdr after any `config.toml` edit:
+3. Reload Herdr after any `config.toml` edit (each named session has its own server — reload or restart that session too):
 
    ```
    herdr server reload-config
+   # named session example:
+   herdr --session three-repo-test server reload-config
    ```
-3. Optional: install agent integrations from the Settings menu or CLI for better session matching.
+
+   On herdr ≥ 0.7.5, installed plugins are global across sessions. After upgrading from 0.7.4, restart named sessions so they pick up the shared plugin registry (`herdr session stop <name>` then `herdr --session <name>`).
+4. Optional: install agent integrations from the Settings menu or CLI for better session matching.
 
 ### Settings menu
 
