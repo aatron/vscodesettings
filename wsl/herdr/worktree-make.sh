@@ -16,7 +16,7 @@
 #                  at its latest remote state.
 #
 # Folder structure produced (no feature/aaron prefix on the path):
-#   $WORKTREE_ROOT/<type>/
+#   <herdr [worktrees].directory>/<type>/
 #       <id>_<slug>.txt              <- notes (sibling of the story folder)
 #       <id>_<slug>/
 #           .notespath               <- absolute path to the notes file
@@ -29,8 +29,9 @@ set -euo pipefail
 # EDIT THESE FOR YOUR MACHINE
 # ===========================================================================
 SRC_ROOT="$HOME/src"                # where your primary repo clones live
-WORKTREE_ROOT="$HOME/worktrees"     # base dir; <type>/... is created under it
 BRANCH_PREFIX="feature/aaron"       # branch name only: feature/aaron/<id>-<slug>
+# Story worktree base comes from Herdr config [worktrees].directory
+# (this workflow uses ~/source/worktrees). Set that in ~/.config/herdr/config.toml.
 
 # ===========================================================================
 # VERIFY ONCE AGAINST YOUR herdr BUILD
@@ -49,6 +50,38 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "missing tool: $1" >&2; exit 
 need herdr; need git; need gum
 
 ask() { gum input --prompt "$1 > " --placeholder "$2"; }
+
+# Resolve story root from Herdr [worktrees].directory (see herdr.dev/docs/configuration).
+# Falls back to Herdr's documented default when unset.
+resolve_worktree_root() {
+  local cfg="${HERDR_CONFIG_PATH:-${HOME}/.config/herdr/config.toml}"
+  local dir=""
+  if [[ -f "$cfg" ]]; then
+    dir="$(awk '
+      /^\[worktrees\]/ { in_section = 1; next }
+      /^\[/ { in_section = 0 }
+      in_section && $0 ~ /^[[:space:]]*directory[[:space:]]*=/ {
+        sub(/^[^=]*=[[:space:]]*/, "")
+        sub(/[[:space:]]+#.*$/, "")
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+        gsub(/^["'\'']|["'\'']$/, "")
+        print
+        exit
+      }
+    ' "$cfg")"
+  fi
+  [[ -z "$dir" ]] && dir="~/source/worktrees"
+  case "$dir" in
+    "~/"*) dir="${HOME}/${dir#~/}" ;;
+    "~")   dir="${HOME}" ;;
+  esac
+  dir="${dir//\$HOME/$HOME}"
+  dir="${dir//\$\{HOME\}/$HOME}"
+  printf '%s\n' "$dir"
+}
+
+WORKTREE_ROOT="$(resolve_worktree_root)"
+echo "-> worktree root (from herdr [worktrees].directory): ${WORKTREE_ROOT}"
 
 # Resolve a repo's default branch (main/master/...), locally if possible.
 default_branch() {

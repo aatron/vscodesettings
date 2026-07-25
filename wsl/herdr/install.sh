@@ -199,10 +199,10 @@ install_plugin "senna-lang/herdr-agent-usage"
 
 PLUGIN_DIR="$(herdr plugin config-dir cloudmanic.herdr-plus)"
 QA_DIR="${PLUGIN_DIR}/quick-actions"
-WT_DIR="${PLUGIN_DIR}/worktrees"
+LAYOUT_DIR="${PLUGIN_DIR}/worktrees"
 
 echo "herdr-plus config: ${PLUGIN_DIR}"
-mkdir -p "$QA_DIR" "$WT_DIR"
+mkdir -p "$QA_DIR" "$LAYOUT_DIR"
 
 echo
 echo "=== 3/3 Worktree workflow files ==="
@@ -212,7 +212,7 @@ echo "-> script:  ${TARGET_SCRIPT} -> ${SCRIPT_DIR}/worktree-make.sh"
 
 install_file "${SCRIPT_DIR}/new-worktree-dev.toml"    "${QA_DIR}/new-worktree-dev.toml"
 install_file "${SCRIPT_DIR}/new-worktree-review.toml" "${QA_DIR}/new-worktree-review.toml"
-install_file "${SCRIPT_DIR}/worktree-layout.toml"     "${WT_DIR}/worktree-layout.toml"
+install_file "${SCRIPT_DIR}/worktree-layout.toml"     "${LAYOUT_DIR}/worktree-layout.toml"
 
 echo
 echo "=== Automated install finished ==="
@@ -221,8 +221,9 @@ echo
 echo "Manual next steps — see README.md for full snippets:"
 echo "  1. Edit machine paths at the top of:"
 echo "       ${SCRIPT_DIR}/worktree-make.sh"
-echo "     (SRC_ROOT, WORKTREE_ROOT, BRANCH_PREFIX)"
-echo "  2. Merge README Herdr settings into config.toml by hand:"
+echo "     (SRC_ROOT, BRANCH_PREFIX)"
+echo "  2. Merge README Herdr settings into config.toml by hand, including:"
+echo "       [worktrees] directory = \"~/source/worktrees\""
 echo "       ${HERDR_CONFIG_PATH:-$HOME/.config/herdr/config.toml}"
 echo "  3. Seed Agent Usage (prints snippets; does not rewrite herdr config.toml):"
 echo "       herdr plugin action invoke usagebar.setup"

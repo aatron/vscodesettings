@@ -28,11 +28,12 @@ chmod +x install.sh worktree-make.sh
    * `new-worktree-review.toml` → **New Review Worktree**
 6. Copy `worktree-layout.toml` into herdr-plus `worktrees/` (wildcard layout for every repo)
 
-Then edit machine-local paths at the top of `worktree-make.sh`:
+Then edit machine-local values at the top of `worktree-make.sh`:
 
 * `SRC_ROOT` — primary clones (`$HOME/src/<repo>`)
-* `WORKTREE_ROOT` — story worktrees base
 * `BRANCH_PREFIX` — e.g. `feature/aaron`
+
+Story worktrees use Herdr’s `[worktrees].directory` from `config.toml` (see below). Do not set a separate `WORKTREE_ROOT` in the script.
 
 ## Herdr settings (manual `config.toml`)
 
@@ -40,6 +41,15 @@ Then edit machine-local paths at the top of `worktree-make.sh`:
 
 ```
 micro ~/.config/herdr/config.toml
+```
+
+### Worktree directory
+
+Used by Herdr’s built-in worktree actions **and** by `worktree-make.sh` for story folders (`development/…`, `review/…`). Set this (recommended for this workflow). If omitted, `worktree-make.sh` falls back to `~/source/worktrees`.
+
+```
+[worktrees]
+directory = "~/source/worktrees"
 ```
 
 ### Theme
@@ -196,9 +206,9 @@ Layout applied to every created worktree:
 
 ## Dry run (home, three repos)
 
-Goal: confirm notes + three worktrees are created under `WORKTREE_ROOT` with the four tabs above.
+Goal: confirm notes + three worktrees are created under `[worktrees].directory` with the four tabs above.
 
-1. Finish **Installation set-up** and set `SRC_ROOT` / `WORKTREE_ROOT`.
+1. Finish **Installation set-up**, set `SRC_ROOT` in `worktree-make.sh`, and set `[worktrees].directory` in `config.toml`.
 2. Clone (or place) three git repos under `SRC_ROOT`, e.g.:
    * `$SRC_ROOT/repo-a`
    * `$SRC_ROOT/repo-b`
@@ -206,11 +216,11 @@ Goal: confirm notes + three worktrees are created under `WORKTREE_ROOT` with the
 3. Ensure each has a remote `origin` and a default branch herdr can base from.
 4. In herdr: **prefix+down** → **New Dev Worktree**
 5. Enter a test id/slug (e.g. `99999` / `dry-run`) and repos `repo-a,repo-b,repo-c`
-6. Expect:
-   * Notes: `$WORKTREE_ROOT/development/99999_dry-run.txt`
-   * Story dir: `$WORKTREE_ROOT/development/99999_dry-run/`
+6. Expect (with `directory = "~/source/worktrees"` → `$HOME/source/worktrees`):
+   * Notes: `$HOME/source/worktrees/development/99999_dry-run.txt`
+   * Story dir: `$HOME/source/worktrees/development/99999_dry-run/`
    * `.notespath` pointing at the notes file
    * Worktrees: `repo-a/`, `repo-b/`, `repo-c/` on branch `feature/aaron/99999-dry-run`
    * Each worktree workspace opens with notes / Claude1 / cursor / terminal
 
-Cleanup after the dry run (from each primary clone): `git worktree list` then `git worktree remove <path>` as needed, and delete the story folder/notes under `WORKTREE_ROOT`.
+Cleanup after the dry run (from each primary clone): `git worktree list` then `git worktree remove <path>` as needed, and delete the story folder/notes under `[worktrees].directory`.
