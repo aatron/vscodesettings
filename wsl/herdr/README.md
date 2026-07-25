@@ -30,7 +30,7 @@ chmod +x install.sh worktree-make.sh
 
 Then edit machine-local values at the top of `worktree-make.sh`:
 
-* `SRC_ROOT` — primary clones (`$HOME/src/<repo>`)
+* `SRC_ROOT` — primary clones (`$HOME/source/repos/<repo>`)
 * `BRANCH_PREFIX` — e.g. `feature/aaron`
 
 Story worktrees use Herdr’s `[worktrees].directory` from `config.toml` (see below). Do not set a separate `WORKTREE_ROOT` in the script.

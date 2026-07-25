@@ -28,7 +28,7 @@ set -euo pipefail
 # ===========================================================================
 # EDIT THESE FOR YOUR MACHINE
 # ===========================================================================
-SRC_ROOT="$HOME/src"                # where your primary repo clones live
+SRC_ROOT="$HOME/source/repos"       # where your primary repo clones live
 BRANCH_PREFIX="feature/aaron"       # branch name only: feature/aaron/<id>-<slug>
 # Story worktree base comes from Herdr config [worktrees].directory
 # (this workflow uses ~/source/worktrees). Set that in ~/.config/herdr/config.toml.
