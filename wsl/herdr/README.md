@@ -10,7 +10,6 @@ On each machine (home and work), clone this repo in WSL, then:
 
 ```
 cd /path/to/vscodesettings/wsl/herdr
-chmod +x install.sh worktree-make.sh claude-statusline.sh
 ./install.sh
 ```
 
@@ -27,7 +26,6 @@ chmod +x install.sh worktree-make.sh claude-statusline.sh
    * `new-worktree-dev.toml` → **New Dev Worktree** (opens a tab, then runs the script)
    * `new-worktree-review.toml` → **New Review Worktree**
 6. Copy `worktree-layout.toml` into herdr-plus `worktrees/` (wildcard layout for every repo)
-7. Claude Code native status line for 5h / 7d (`~/.claude/statusline-rate-limits.sh` + `settings.json` merge; skips if you already have a custom `statusLine`)
 
 Then edit machine-local values at the top of `worktree-make.sh`:
 
@@ -164,35 +162,8 @@ Agent Usage **cannot** draw on Herdr’s global bottom status bar (plugins have 
 |---------|----------------|
 | Agent sidebar `$limit` / `$provider` | Shortest remaining plan window for the focused Claude pane (needs the sidebar rows above) |
 | **ctrl+shift+u** → limits pane | Full Claude 5h / 7d (and other providers) account windows |
-| Claude Code status line (bottom of the Claude pane) | Native Claude footer (installed by `install.sh` — unrelated to Herdr) |
 
 On demand inside Claude: `/usage` shows the full plan windows without a persistent footer.
-
-#### Claude Code status line (native — applied by `install.sh`)
-
-Claude Code has no built-in “always show 5h/7d” toggle. The idiomatic footer is a `statusLine` command that reads session JSON from stdin (including native `rate_limits`). Docs: [Customize your status line](https://code.claude.com/docs/en/statusline).
-
-`install.sh` does this automatically and idempotently (re-runs are safe):
-
-1. Installs `jq` (apt) if missing.
-2. Copies `claude-statusline.sh` → `~/.claude/statusline-rate-limits.sh` (refreshes when the source changes).
-3. Merges into `~/.claude/settings.json`:
-
-   ```json
-   {
-     "statusLine": {
-       "type": "command",
-       "command": "/home/<you>/.claude/statusline-rate-limits.sh"
-     }
-   }
-   ```
-
-   - Creates `settings.json` if missing.
-   - Adds `statusLine` when absent.
-   - Refreshes the command when it already points at the managed script.
-   - **Leaves a custom `statusLine.command` unchanged** (prints a note; chain the managed script yourself if you want both).
-
-Pro/Max only; `rate_limits` appear after the first API reply in a session. Send a message (or resume) so the footer updates; `/status` confirms settings loaded. Independent of Herdr Agent Usage (sidebar / limits pane / toasts).
 
 ## Apply settings
 

@@ -11,7 +11,6 @@
 #      and worktree-launch.sh -> ~/bin/worktree-launch.sh
 #   5. Installs quick-action TOMLs (dev + review) into herdr-plus
 #   6. Installs the wildcard worktree auto-layout (repo = "*")
-#   7. Claude Code native statusLine for 5h/7d (managed script + settings merge)
 #
 # Manual config.toml edits are listed at the end and in README.md.
 #
@@ -22,9 +21,6 @@ BIN_DIR="${HOME}/bin"
 LOCAL_BIN="${HOME}/.local/bin"
 TARGET_SCRIPT="${BIN_DIR}/make-worktree.sh"
 TARGET_LAUNCH="${BIN_DIR}/worktree-launch.sh"
-CLAUDE_DIR="${HOME}/.claude"
-CLAUDE_STATUSLINE_SCRIPT="${CLAUDE_DIR}/statusline-rate-limits.sh"
-CLAUDE_SETTINGS="${CLAUDE_DIR}/settings.json"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -221,67 +217,8 @@ fix_example_openers() {
   done
 }
 
-# Claude Code native statusLine for 5h/7d (unrelated to Herdr Agent Usage).
-# Idempotent: refreshes managed script; only writes statusLine when missing or
-# already pointing at this managed script (never replaces a custom command).
-ensure_claude_statusline() {
-  local src="${SCRIPT_DIR}/claude-statusline.sh"
-  local cmd="${CLAUDE_STATUSLINE_SCRIPT}"
-  local current="" tmp
-
-  [[ -f "$src" ]] || { echo "missing ${src}" >&2; exit 1; }
-  have jq || { echo "jq is required for Claude statusLine setup" >&2; exit 1; }
-
-  mkdir -p "$CLAUDE_DIR"
-  install_file "$src" "$CLAUDE_STATUSLINE_SCRIPT"
-  chmod +x "$CLAUDE_STATUSLINE_SCRIPT"
-
-  if [[ ! -f "$CLAUDE_SETTINGS" ]]; then
-    jq -n --arg cmd "$cmd" \
-      '{statusLine: {type: "command", command: $cmd}}' > "$CLAUDE_SETTINGS"
-    echo "-> claude settings: created ${CLAUDE_SETTINGS} with statusLine"
-    return
-  fi
-
-  if ! jq empty "$CLAUDE_SETTINGS" 2>/dev/null; then
-    echo "-> claude settings: invalid JSON at ${CLAUDE_SETTINGS} — left unchanged" >&2
-    return
-  fi
-
-  current="$(jq -r '.statusLine.command // empty' "$CLAUDE_SETTINGS")"
-  if [[ -z "$current" ]]; then
-    tmp="$(mktemp)"
-    jq --arg cmd "$cmd" \
-      '.statusLine = {type: "command", command: $cmd}' \
-      "$CLAUDE_SETTINGS" > "$tmp"
-    mv "$tmp" "$CLAUDE_SETTINGS"
-    echo "-> claude settings: added statusLine -> ${cmd}"
-    return
-  fi
-
-  case "$current" in
-    "$cmd"|"~/.claude/statusline-rate-limits.sh"|"$HOME/.claude/statusline-rate-limits.sh")
-      tmp="$(mktemp)"
-      jq --arg cmd "$cmd" \
-        '.statusLine = {type: "command", command: $cmd}' \
-        "$CLAUDE_SETTINGS" > "$tmp"
-      if cmp -s "$tmp" "$CLAUDE_SETTINGS"; then
-        rm -f "$tmp"
-        echo "-> claude settings: statusLine already set -> ${cmd}"
-      else
-        mv "$tmp" "$CLAUDE_SETTINGS"
-        echo "-> claude settings: refreshed statusLine -> ${cmd}"
-      fi
-      ;;
-    *)
-      echo "-> claude settings: left existing statusLine unchanged: ${current}"
-      echo "   (managed script is at ${cmd}; chain it from your custom statusLine if desired)"
-      ;;
-  esac
-}
-
 # ===========================================================================
-echo "=== 1/4 Prerequisites ==="
+echo "=== 1/3 Prerequisites ==="
 ensure_path_dirs
 ensure_apt_pkgs curl git micro jq
 ensure_herdr
@@ -291,7 +228,7 @@ ensure_claude
 ensure_agent
 
 echo
-echo "=== 2/4 Herdr plugins ==="
+echo "=== 2/3 Herdr plugins ==="
 install_plugin "cloudmanic/herdr-plus"
 install_plugin "senna-lang/herdr-agent-usage"
 
@@ -303,7 +240,7 @@ echo "herdr-plus config: ${PLUGIN_DIR}"
 mkdir -p "$QA_DIR" "$LAYOUT_DIR"
 
 echo
-echo "=== 3/4 Worktree workflow files ==="
+echo "=== 3/3 Worktree workflow files ==="
 normalize_shell_script "${SCRIPT_DIR}/worktree-make.sh"
 normalize_shell_script "${SCRIPT_DIR}/worktree-launch.sh"
 ln -sfn "${SCRIPT_DIR}/worktree-make.sh" "$TARGET_SCRIPT"
@@ -320,13 +257,8 @@ install_file "${SCRIPT_DIR}/worktree-layout.toml"     "${LAYOUT_DIR}/worktree-la
 fix_example_openers "$QA_DIR"
 
 echo
-echo "=== 4/4 Claude Code status line (5h / 7d) ==="
-ensure_claude_statusline
-
-echo
 echo "=== Automated install finished ==="
 echo "  (Existing config.toml is never overwritten; defaults are written only if missing.)"
-echo "  (Claude statusLine is managed under ~/.claude/; custom statusLine commands are left alone.)"
 echo
 echo "Manual next steps — see README.md for full snippets:"
 echo "  1. Edit machine paths at the top of:"
