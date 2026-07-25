@@ -22,9 +22,9 @@ chmod +x install.sh worktree-make.sh claude-statusline.sh
 3. Install plugins:
    * `cloudmanic/herdr-plus` — Projects, quick actions, worktree auto-layout
    * `senna-lang/herdr-agent-usage` — Context meters + provider rate limits
-4. Symlink `worktree-make.sh` → `~/bin/make-worktree.sh`
+4. Symlink `worktree-make.sh` → `~/bin/make-worktree.sh` and `worktree-launch.sh` → `~/bin/worktree-launch.sh`
 5. Copy quick actions into herdr-plus `quick-actions/`:
-   * `new-worktree-dev.toml` → **New Dev Worktree**
+   * `new-worktree-dev.toml` → **New Dev Worktree** (opens a tab, then runs the script)
    * `new-worktree-review.toml` → **New Review Worktree**
 6. Copy `worktree-layout.toml` into herdr-plus `worktrees/` (wildcard layout for every repo)
 7. Claude Code native status line for 5h / 7d (`~/.claude/statusline-rate-limits.sh` + `settings.json` merge; skips if you already have a custom `statusLine`)
@@ -206,10 +206,11 @@ Pro/Max only; `rate_limits` appear after the first API reply in a session. Send 
 
    ```
    herdr server reload-config
-   # named session example:
+   # named session (required when that session is the one you are using):
    herdr --session three-repo-test server reload-config
    ```
 
+   Bare `herdr server reload-config` only talks to the **default** session. If that session is stopped you get `No such file or directory` (missing socket) — pass `--session <name>` for the running session (`herdr session list`).
    On herdr ≥ 0.7.5, installed plugins are global across sessions. After upgrading from 0.7.4, restart named sessions so they pick up the shared plugin registry (`herdr session stop <name>` then `herdr --session <name>`).
 4. Optional: install agent integrations from the Settings menu or CLI for better session matching.
 
@@ -236,6 +237,7 @@ Layout applied to every created worktree:
 ## Daily use
 
 * **prefix+down** → **New Dev Worktree** or **New Review Worktree**
+* That opens a new tab and runs `make-worktree.sh` there (herdr-plus overlays cannot host interactive `gum` prompts)
 * Dev prompts: story id, slug, comma-separated repo names
 * Review uses a placeholder branch list until Azure wiring is added at work
 * **ctrl+shift+u** → Agent Usage limits pane (if you added the keybind)

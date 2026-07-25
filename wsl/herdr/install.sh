@@ -8,6 +8,7 @@
 #   2. Creates default config.toml if missing (herdr --default-config)
 #   3. Installs herdr plugins (herdr-plus, herdr-agent-usage)
 #   4. Symlinks worktree-make.sh -> ~/bin/make-worktree.sh
+#      and worktree-launch.sh -> ~/bin/worktree-launch.sh
 #   5. Installs quick-action TOMLs (dev + review) into herdr-plus
 #   6. Installs the wildcard worktree auto-layout (repo = "*")
 #   7. Claude Code native statusLine for 5h/7d (managed script + settings merge)
@@ -20,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${HOME}/bin"
 LOCAL_BIN="${HOME}/.local/bin"
 TARGET_SCRIPT="${BIN_DIR}/make-worktree.sh"
+TARGET_LAUNCH="${BIN_DIR}/worktree-launch.sh"
 CLAUDE_DIR="${HOME}/.claude"
 CLAUDE_STATUSLINE_SCRIPT="${CLAUDE_DIR}/statusline-rate-limits.sh"
 CLAUDE_SETTINGS="${CLAUDE_DIR}/settings.json"
@@ -277,6 +279,10 @@ ln -sfn "${SCRIPT_DIR}/worktree-make.sh" "$TARGET_SCRIPT"
 chmod +x "${SCRIPT_DIR}/worktree-make.sh"
 echo "-> script:  ${TARGET_SCRIPT} -> ${SCRIPT_DIR}/worktree-make.sh"
 
+ln -sfn "${SCRIPT_DIR}/worktree-launch.sh" "$TARGET_LAUNCH"
+chmod +x "${SCRIPT_DIR}/worktree-launch.sh"
+echo "-> launch:  ${TARGET_LAUNCH} -> ${SCRIPT_DIR}/worktree-launch.sh"
+
 install_file "${SCRIPT_DIR}/new-worktree-dev.toml"    "${QA_DIR}/new-worktree-dev.toml"
 install_file "${SCRIPT_DIR}/new-worktree-review.toml" "${QA_DIR}/new-worktree-review.toml"
 install_file "${SCRIPT_DIR}/worktree-layout.toml"     "${LAYOUT_DIR}/worktree-layout.toml"
@@ -304,8 +310,8 @@ echo "  4. Optional toast delivery — prefer pasting the README [ui.toast] bloc
 echo "     instead of usagebar.enable-toast (that command can append to config.toml)."
 echo "  5. herdr config check   # fix any unknown keys before continuing"
 echo "  6. herdr server reload-config"
-echo "     (named sessions: herdr --session <name> server reload-config,"
-echo "      or session stop + reattach after a herdr upgrade)"
+echo "     (named sessions: herdr --session <name> server reload-config;"
+echo "      bare 'herdr server reload-config' only hits the default session)"
 echo "  7. Dry-run: prefix+down -> New Dev Worktree"
 echo
 echo "If 'claude' or 'agent' is missing in a new terminal, source ~/.bashrc or reopen WSL."
