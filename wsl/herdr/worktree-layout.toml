@@ -3,17 +3,25 @@
 # per-repo toml unless you want a repo-specific override.
 #
 # Tabs open at the worktree root when herdr creates/opens a worktree.
-# On create, make-worktree.sh renames claude/bash to "{repo} claude" /
-# "{repo} bash" (herdr-plus layouts cannot interpolate the repo name).
+# On create, make-worktree.sh renames claude/cursor/bash to "{repo} claude" /
+# "{repo} cursor" / "{repo} bash" (herdr-plus layouts cannot interpolate the
+# repo name). For development-windows worktrees, make-worktree.sh instead closes
+# the claude/cursor tabs and opens native Windows PowerShell tabs via wt.exe.
 repo = "*"
 
+# Per-repo notes: each worktree opens its own <id>-<slug>-<repo>.txt via the
+# sidecar make-worktree.sh writes at ../.notespath-<repo> (repo = worktree dir).
 [[tabs]]
 name = "notes"
-command = 'micro "$(cat ../.notespath)"'
+command = 'micro "$(cat "../.notespath-$(basename "$PWD")")"'
 
 [[tabs]]
 name = "claude"
 command = "claude"
+
+[[tabs]]
+name = "cursor"
+command = "agent"
 
 [[tabs]]
 name = "bash"

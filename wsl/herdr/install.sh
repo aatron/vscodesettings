@@ -7,9 +7,10 @@
 #   1. Installs CLI prerequisites: herdr, gum, git, micro, jq, claude, agent
 #   2. Creates default config.toml if missing (herdr --default-config)
 #   3. Installs herdr plugins (herdr-plus, herdr-agent-usage)
-#   4. Symlinks worktree-make.sh -> ~/bin/make-worktree.sh
-#      and worktree-launch.sh -> ~/bin/worktree-launch.sh
-#   5. Installs quick-action TOMLs (dev + review) into herdr-plus
+#   4. Symlinks worktree-make.sh -> ~/bin/make-worktree.sh,
+#      worktree-launch.sh -> ~/bin/worktree-launch.sh, and
+#      worktree-remove.sh -> ~/bin/worktree-remove.sh
+#   5. Installs quick-action TOMLs (dev + dev-windows + review + delete) into herdr-plus
 #   6. Installs the wildcard worktree auto-layout (repo = "*")
 #
 # Manual config.toml edits are listed at the end and in README.md.
@@ -21,6 +22,7 @@ BIN_DIR="${HOME}/bin"
 LOCAL_BIN="${HOME}/.local/bin"
 TARGET_SCRIPT="${BIN_DIR}/make-worktree.sh"
 TARGET_LAUNCH="${BIN_DIR}/worktree-launch.sh"
+TARGET_REMOVE="${BIN_DIR}/worktree-remove.sh"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -243,15 +245,21 @@ echo
 echo "=== 3/3 Worktree workflow files ==="
 normalize_shell_script "${SCRIPT_DIR}/worktree-make.sh"
 normalize_shell_script "${SCRIPT_DIR}/worktree-launch.sh"
+normalize_shell_script "${SCRIPT_DIR}/worktree-remove.sh"
 ln -sfn "${SCRIPT_DIR}/worktree-make.sh" "$TARGET_SCRIPT"
 echo "-> script:  ${TARGET_SCRIPT} -> ${SCRIPT_DIR}/worktree-make.sh"
 
 ln -sfn "${SCRIPT_DIR}/worktree-launch.sh" "$TARGET_LAUNCH"
 echo "-> launch:  ${TARGET_LAUNCH} -> ${SCRIPT_DIR}/worktree-launch.sh"
 
-install_file "${SCRIPT_DIR}/new-worktree-dev.toml"    "${QA_DIR}/new-worktree-dev.toml"
-install_file "${SCRIPT_DIR}/new-worktree-review.toml" "${QA_DIR}/new-worktree-review.toml"
-install_file "${SCRIPT_DIR}/worktree-layout.toml"     "${LAYOUT_DIR}/worktree-layout.toml"
+ln -sfn "${SCRIPT_DIR}/worktree-remove.sh" "$TARGET_REMOVE"
+echo "-> remove:  ${TARGET_REMOVE} -> ${SCRIPT_DIR}/worktree-remove.sh"
+
+install_file "${SCRIPT_DIR}/new-worktree-dev.toml"         "${QA_DIR}/new-worktree-dev.toml"
+install_file "${SCRIPT_DIR}/new-worktree-dev-windows.toml" "${QA_DIR}/new-worktree-dev-windows.toml"
+install_file "${SCRIPT_DIR}/new-worktree-review.toml"      "${QA_DIR}/new-worktree-review.toml"
+install_file "${SCRIPT_DIR}/remove-worktree.toml"          "${QA_DIR}/remove-worktree.toml"
+install_file "${SCRIPT_DIR}/worktree-layout.toml"          "${LAYOUT_DIR}/worktree-layout.toml"
 
 # Seeded herdr-plus examples use macOS `open`; rewrite to {{opener}} on Linux/WSL.
 fix_example_openers "$QA_DIR"
