@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 #
 # worktree-remove.sh
-# Delete an entire story: for every repo worktree in the story it
+# Delete an entire story by id: for every repo worktree in each matching story
+# folder it
 #   1. closes the herdr workspace (if present),
 #   2. removes the git worktree, and
 #   3. deletes the local git branch that worktree was on,
 # then deletes every per-repo notes file and the story folder.
 #
-# It checks all three layouts a story can live under and cleans up whichever
-# exist:
-#   <herdr [worktrees].directory>/development/<id>_<slug>/   (development)
-#   <herdr [worktrees].directory>/review/<id>_<slug>/        (review)
-#   <WindowsUserProfile-or-override>/source/worktrees/development/<id>_<slug>/
+# Input: story id only (arg $1, or WT_ID, or gum prompt). Slug is read from
+# on-disk folder names matching {id}_* under:
+#   <herdr [worktrees].directory>/development/<id>_*/   (development)
+#   <herdr [worktrees].directory>/review/<id>_*/        (review)
+#   <WindowsUserProfile-or-override>/source/worktrees/development/<id>_*/
 #                                                            (development-windows)
 #
 # Nothing machine-specific is hardcoded (Windows user profile is derived at
 # runtime). Primary clones are discovered from each worktree, so SRC_ROOT is
-# not needed here. Destructive — asks for confirmation first.
+# not needed here. Destructive — asks for confirmation first (unless
+# WT_ASSUME_YES=1).
 #
 set -euo pipefail
 
@@ -25,8 +27,8 @@ set -euo pipefail
 WINDOWS_WORKTREE_ROOT=""
 
 # herdr-plus quick actions run with stdin = /dev/null. Prefer the pane PTY from
-# stdout (fd 1); fall back to the controlling tty.
-if [[ ! -t 0 ]]; then
+# stdout (fd 1); fall back to the controlling tty. Skip when non-interactive.
+if [[ "${WT_ASSUME_YES:-}" != "1" && ! -t 0 ]]; then
   if [[ -t 1 ]]; then
     exec <&1
   elif [[ -r /dev/tty ]]; then
@@ -38,7 +40,10 @@ if [[ ! -t 0 ]]; then
 fi
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing tool: $1" >&2; exit 1; }; }
-need herdr; need git; need gum; need jq
+need herdr; need git; need jq
+if [[ "${WT_ASSUME_YES:-}" != "1" ]]; then
+  need gum
+fi
 
 ask() { gum input --prompt "$1 > " --placeholder "$2"; }
 
@@ -91,13 +96,14 @@ default_branch() {
 }
 
 # --- inputs ----------------------------------------------------------------
-ID="$(ask 'Story id' '12345')"
-SLUG="$(ask 'Slug' 'slug-example')"
-[[ -n "$ID" && -n "$SLUG" ]] || { echo "id and slug required" >&2; exit 1; }
+# Prefer CLI arg, then WT_ID (quick action / automation), else prompt.
+ID="${1:-${WT_ID:-}}"
+if [[ -z "$ID" ]]; then
+  ID="$(ask 'Story id' '12345')"
+fi
+[[ -n "$ID" ]] || { echo "story id required" >&2; exit 1; }
 
-STORY="${ID}_${SLUG}"
-
-# Candidate story dirs (dedup).
+# Candidate story dirs: every {id}_* under the three layouts (dedup).
 HERDR_ROOT="$(resolve_worktree_root)"
 WIN_ROOT="$(resolve_windows_root 2>/dev/null || true)"
 
@@ -108,12 +114,20 @@ add_candidate() {
   for c in "${CANDIDATES[@]:-}"; do [[ "$c" == "$d" ]] && return 0; done
   CANDIDATES+=("$d")
 }
-add_candidate "${HERDR_ROOT}/development/${STORY}"
-add_candidate "${HERDR_ROOT}/review/${STORY}"
-[[ -n "$WIN_ROOT" ]] && add_candidate "${WIN_ROOT}/development/${STORY}"
+add_glob() {
+  local base="$1" d
+  [[ -d "$base" ]] || return 0
+  for d in "$base"/"${ID}"_*/; do
+    [[ -d "$d" ]] || continue
+    add_candidate "${d%/}"
+  done
+}
+add_glob "${HERDR_ROOT}/development"
+add_glob "${HERDR_ROOT}/review"
+[[ -n "$WIN_ROOT" ]] && add_glob "${WIN_ROOT}/development"
 
 if (( ${#CANDIDATES[@]} == 0 )); then
-  echo "No story folder found for ${STORY} under:"
+  echo "No story folder matching ${ID}_* under:"
   echo "  ${HERDR_ROOT}/development|review"
   [[ -n "$WIN_ROOT" ]] && echo "  ${WIN_ROOT}/development"
   exit 0
@@ -134,6 +148,9 @@ declare -a PLAN=()          # human-readable lines
 declare -a WT_DIRS=() WT_REPOS=() WT_BRANCHES=() WT_PRIMARIES=() WT_WS=()
 
 for story_dir in "${CANDIDATES[@]}"; do
+  story_name="${story_dir##*/}"
+  slug="${story_name#"${ID}"_}"
+  PLAN+=("story ${story_name}:")
   for wt in "$story_dir"/*/; do
     wt="${wt%/}"
     [[ -e "$wt/.git" ]] || continue
@@ -151,16 +168,20 @@ for story_dir in "${CANDIDATES[@]}"; do
   done
   # notes files live one level up (sibling of the story folder)
   type_dir="${story_dir%/*}"
-  for nf in "${type_dir}/${ID}-${SLUG}-"*.txt; do
+  for nf in "${type_dir}/${ID}-${slug}-"*.txt; do
     [[ -e "$nf" ]] && PLAN+=("  notes    ${nf}")
   done
   PLAN+=("  folder   ${story_dir}")
 done
 
-echo "About to DELETE story ${STORY}:"
+echo "About to DELETE story id ${ID} (${#CANDIDATES[@]} folder(s)):"
 printf '%s\n' "${PLAN[@]}"
 echo
-gum confirm "Delete all of the above? This cannot be undone." || { echo "aborted."; exit 0; }
+if [[ "${WT_ASSUME_YES:-}" == "1" ]]; then
+  echo "WT_ASSUME_YES=1 — skipping confirmation"
+else
+  gum confirm "Delete all of the above? This cannot be undone." || { echo "aborted."; exit 0; }
+fi
 
 # --- execute ---------------------------------------------------------------
 for i in "${!WT_DIRS[@]}"; do
@@ -187,12 +208,14 @@ done
 
 # Delete per-repo notes files and the story folders.
 for story_dir in "${CANDIDATES[@]}"; do
+  story_name="${story_dir##*/}"
+  slug="${story_name#"${ID}"_}"
   type_dir="${story_dir%/*}"
-  rm -f "${type_dir}/${ID}-${SLUG}-"*.txt
-  # Safety: only rm -rf a path that ends in the expected story name.
-  if [[ -n "$story_dir" && "${story_dir##*/}" == "$STORY" ]]; then
+  rm -f "${type_dir}/${ID}-${slug}-"*.txt
+  # Safety: only rm -rf a path whose basename is {id}_*
+  if [[ -n "$story_dir" && "$story_name" == "${ID}_"* ]]; then
     rm -rf "$story_dir"
   fi
 done
 
-echo "OK deleted story ${STORY}."
+echo "OK deleted story id ${ID}."

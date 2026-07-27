@@ -7,22 +7,23 @@
 # target script into that pane via `herdr pane run`.
 #
 # Usage:
-#   worktree-launch.sh <development|development-windows|review> [ws] [cwd]  -> make-worktree.sh <type>
-#   worktree-launch.sh remove [ws] [cwd]                                    -> worktree-remove.sh
+#   worktree-launch.sh <development|development-windows|review> [ws] [cwd]       -> make-worktree.sh <type>
+#   worktree-launch.sh remove [ws] [cwd] [story-id]                              -> worktree-remove.sh
 #
 set -euo pipefail
 
 ACTION="${1:-}"
 WS="${2:-}"
 CWD="${3:-}"
+STORY_ID="${4:-}"
 
 case "$ACTION" in
   development)         SCRIPT="${HOME}/bin/make-worktree.sh"; RUN_ARGS="$ACTION"; label="New Dev Worktree" ;;
   development-windows) SCRIPT="${HOME}/bin/make-worktree.sh"; RUN_ARGS="$ACTION"; label="New Dev Worktree (Windows)" ;;
   review)              SCRIPT="${HOME}/bin/make-worktree.sh"; RUN_ARGS="$ACTION"; label="New Review Worktree" ;;
-  remove)              SCRIPT="${HOME}/bin/worktree-remove.sh"; RUN_ARGS=""; label="Delete Story Worktree" ;;
+  remove)              SCRIPT="${HOME}/bin/worktree-remove.sh"; RUN_ARGS="$STORY_ID"; label="Delete Story Worktree" ;;
   *)
-    echo "usage: $0 <development|development-windows|review|remove> [workspace_id] [cwd]" >&2
+    echo "usage: $0 <development|development-windows|review|remove> [workspace_id] [cwd] [story-id]" >&2
     exit 1 ;;
 esac
 

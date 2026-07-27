@@ -26,7 +26,7 @@ cd /path/to/vscodesettings/wsl/herdr
    * `new-worktree-dev.toml` → **New Dev Worktree** (opens a tab, then runs the script)
    * `new-worktree-dev-windows.toml` → **New Dev Worktree (Windows)** (worktrees under the Windows `/mnt/c` path)
    * `new-worktree-review.toml` → **New Review Worktree**
-   * `remove-worktree.toml` → **Delete Story Worktree** (removes a story's worktrees, branches, and notes)
+   * `remove-worktree.toml` → **Delete Story Worktree** (form: story id → removes matching `{id}_*` worktrees, branches, and notes)
 6. Copy `worktree-layout.toml` into herdr-plus `worktrees/` (wildcard layout for every repo)
 
 Then edit machine-local values at the top of `worktree-make.sh`:
@@ -268,17 +268,17 @@ On **create** via `make-worktree.sh`, the claude/cursor/bash tabs are renamed to
 * Dev prompts: story id, slug, comma-separated repo names
 * **New Dev Worktree (Windows)**: same prompts as Dev, but worktrees are created under `WINDOWS_WORKTREE_ROOT` (`<WindowsUserProfile>/source/worktrees/development/…`); herdr shows only `notes` + `{repo} bash`, and a native Windows PowerShell tab `{id}-{slug}-{repo}` opens per repo. Prereqs: Windows Terminal + Claude/Cursor installed natively on Windows.
 * Review uses a placeholder branch list until Azure wiring is added at work
-* **prefix+down** → **Delete Story Worktree** to tear a story down (see below)
+* **prefix+down** → **Delete Story Worktree** to tear a story down (enter story id only; see below)
 * **ctrl+shift+u** → Agent Usage limits pane (if you added the keybind)
 
 ## Delete a story
 
-**prefix+down** → **Delete Story Worktree** opens a tab and runs `worktree-remove.sh`. Enter the story `id` and `slug`; it finds the story under all three layouts it can live in — `<[worktrees].directory>/development`, `<[worktrees].directory>/review`, and `<WindowsUserProfile>/source/worktrees/development` — and, after a `gum` confirmation, for the whole story:
+**prefix+down** → **Delete Story Worktree** asks for the story `id` only (herdr-plus form), then opens a tab and runs `worktree-remove.sh`. The script globs every `{id}_*` folder under all three layouts a story can live in — `<[worktrees].directory>/development`, `<[worktrees].directory>/review`, and `<WindowsUserProfile>/source/worktrees/development` — and, after a `gum` confirmation, for each matching story:
 
 * closes each repo's herdr workspace (if open),
 * runs `git worktree remove --force` on each repo worktree,
 * deletes each worktree's **local** git branch (never the repo's default branch; a detached HEAD is skipped),
-* deletes every per-repo notes file `<id>-<slug>-<repo>.txt` and removes the story folder.
+* deletes every per-repo notes file `<id>-<slug>-<repo>.txt` (slug taken from the folder name) and removes the story folder.
 
 The primary clone for each worktree is discovered from the worktree itself (`git rev-parse --git-common-dir`), so no `SRC_ROOT` is needed and it stays portable. It only deletes **local** branches — remote branches are untouched.
 
