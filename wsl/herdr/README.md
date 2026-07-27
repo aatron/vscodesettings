@@ -68,7 +68,12 @@ name = "solarized"
 ```
 [theme.custom]
 overlay0 = "#93a1a1" # Lighten secondary text
+accent   = "#5fff5f" # Brighter green for the highlighted/selected sidebar row (and other accents)
 ```
+
+`accent` is the token herdr uses for highlights, borders, and navigation UI, so
+overriding it here is what turns the selected left-panel row bright green. Tweak the
+hex to taste.
 
 ### Navigation keys
 
@@ -111,17 +116,44 @@ sidebar_start_collapsed = false             # keep the story sidebar visible —
 
 ### Story navigation on the left-hand panel
 
-The left sidebar **is** the story navigation — herdr has no plugin API for a custom
-sidebar, but each repo worktree is created as a workspace labeled `{id}_{slug}/{repo}`, and
-the `workspace` row token renders that label. Because the labels share the `{id}_{slug}`
-prefix and sort together, the sidebar naturally groups every repo under its story. Keep it
-visible (`sidebar_start_collapsed = false`) and use it to jump between worktrees; the built-in
-`previous_workspace` / `next_workspace` keys (see below) move within it.
+The left sidebar **is** the story navigation. herdr groups every workspace by its
+**source repository** (`worktree.repo_key`) and always nests linked worktrees under
+their primary clone. This grouping is built in — herdr offers no config to group by the
+story folder instead — so the panel reads **repo → its story worktrees**:
+
+```
+herdrtest1
+  111_example-first
+  222_example-second
+herdrtest2
+  222_example-second
+```
+
+Two cleanups make that readable:
+
+* **Label = `{id}_{slug}` only.** Because the repo is already the group header, each
+  worktree is labeled just `{id}_{slug}` (no repeated `/{repo}` suffix — set by
+  `--label` in `worktree-make.sh`). Labels are display names, so repeating `{id}_{slug}`
+  across repos is fine.
+* **No branch row.** The second sidebar row (`branch` / `git_status`) is dropped, so the
+  primary-clone header no longer prints a misleading `main` — the worktrees under it are
+  each on their own `feature/aaron/{id}-{slug}` branch, so the clone's own branch is not
+  representative of the group.
+
+The selected row is highlighted in bright green via `[theme.custom].accent` (see Theme
+above). Keep the panel visible (`sidebar_start_collapsed = false`) and use
+`previous_workspace` / `next_workspace` (below) to move within it.
 
 ```
 [ui.sidebar.spaces]
-rows = [["state_icon", "workspace"], ["branch", "git_status"]]
+# One row per entry: state icon + workspace label ({id}_{slug}).
+# Each repo's header row is its primary clone (the repo name, e.g. "herdrtest1").
+rows = [["state_icon", "workspace"]]
 ```
+
+> Want per-worktree git ahead/behind back? Add a second row:
+> `rows = [["state_icon", "workspace"], ["git_status"]]`. Avoid the `branch` token — that
+> is what printed the misleading `main`.
 
 ### Agent Usage sidebar (Herdr 0.7.5+)
 
@@ -230,7 +262,7 @@ On **create** via `make-worktree.sh`, the claude/cursor/bash tabs are renamed to
 
 ## Daily use
 
-* **Navigate** between story worktrees from the left sidebar (grouped by `{id}_{slug}`), or with `previous_workspace` / `next_workspace`
+* **Navigate** between story worktrees from the left sidebar (grouped by repo; each worktree row is labeled `{id}_{slug}`), or with `previous_workspace` / `next_workspace`
 * **prefix+down** → **New Dev Worktree**, **New Dev Worktree (Windows)**, or **New Review Worktree**
 * That opens a new tab and runs `make-worktree.sh` there (herdr-plus overlays cannot host interactive `gum` prompts)
 * Dev prompts: story id, slug, comma-separated repo names

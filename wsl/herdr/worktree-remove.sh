@@ -119,11 +119,13 @@ if (( ${#CANDIDATES[@]} == 0 )); then
   exit 0
 fi
 
-# Find the herdr workspace id for a "<id>_<slug>/<repo>" label, if any.
-workspace_id_for() {
-  local label="$1"
+# Find the herdr workspace id for a worktree by its checkout path, if any.
+# Matching on the path (not the label) is robust: worktree labels are now just
+# "<id>_<slug>" and repeat across repos, so they can't identify a single workspace.
+workspace_id_for_path() {
+  local path="$1"
   herdr workspace list 2>/dev/null \
-    | jq -r --arg l "$label" '.result.workspaces[]? | select(.label==$l) | .workspace_id' \
+    | jq -r --arg p "$path" '.result.workspaces[]? | select(.worktree.checkout_path==$p) | .workspace_id' \
     | head -n1
 }
 
@@ -140,7 +142,7 @@ for story_dir in "${CANDIDATES[@]}"; do
     # The main working tree is the first entry of `git worktree list`.
     primary="$( { git -C "$wt" worktree list --porcelain 2>/dev/null \
                   | awk '/^worktree /{print $2; exit}'; } || true )"
-    ws="$(workspace_id_for "${STORY}/${repo}" || true)"
+    ws="$(workspace_id_for_path "$wt" || true)"
     WT_DIRS+=("$wt"); WT_REPOS+=("$repo"); WT_BRANCHES+=("$branch")
     WT_PRIMARIES+=("$primary"); WT_WS+=("$ws")
     PLAN+=("  worktree ${wt}")

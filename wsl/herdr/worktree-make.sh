@@ -242,7 +242,7 @@ make_worktree_new() {
   git -C "$src" fetch --prune origin
   local def; def="$(default_branch "$src")"
   out="$(herdr worktree create --cwd "$src" --branch "$branch" --base "origin/${def}" \
-      --path "${STORY_DIR}/${repo}" --label "${ID}_${SLUG}/${repo}" --no-focus)"
+      --path "${STORY_DIR}/${repo}" --label "${ID}_${SLUG}" --no-focus)"
   ws="$(jq -r '.result.workspace.workspace_id // empty' <<<"$out")"
   [[ -n "$ws" ]] || {
     echo "herdr worktree create failed for ${repo}:" >&2
@@ -264,7 +264,7 @@ make_worktree_existing() {
   write_repo_notes "$repo"
   git -C "$src" fetch --prune origin
   out="$(herdr worktree create --cwd "$src" --branch "$branch" --base "origin/${branch}" \
-      --path "${STORY_DIR}/${repo}" --label "${ID}_${SLUG}/${repo}" --no-focus)"
+      --path "${STORY_DIR}/${repo}" --label "${ID}_${SLUG}" --no-focus)"
   ws="$(jq -r '.result.workspace.workspace_id // empty' <<<"$out")"
   [[ -n "$ws" ]] || {
     echo "herdr worktree create failed for ${repo}:" >&2
