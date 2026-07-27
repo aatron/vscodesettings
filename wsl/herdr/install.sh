@@ -173,11 +173,10 @@ ensure_agent() {
 install_plugin() {
   local spec="$1"
   echo "-> plugin: herdr plugin install ${spec}"
-  if herdr plugin install --help 2>&1 | grep -q -- '--yes'; then
-    herdr plugin install --yes "$spec"
-  else
-    herdr plugin install "$spec"
-  fi
+  # Non-interactive installs need --yes. It must come *after* the repo:
+  # `herdr plugin install --yes owner/repo` and `-y owner/repo` both print
+  # usage and do nothing (herdr 0.7.5). `owner/repo --yes` works.
+  herdr plugin install "$spec" --yes
 }
 
 install_file() {
@@ -210,7 +209,7 @@ fix_example_openers() {
   for f in "$dir"/*.toml; do
     [[ -f "$f" ]] || continue
     case "$(basename "$f")" in
-      new-worktree-*.toml) continue ;;
+      new-worktree-*.toml|remove-worktree.toml) continue ;;
     esac
     if grep -qE 'command = "open ' "$f"; then
       sed -i 's/command = "open /command = "{{opener}} /g' "$f"
@@ -235,6 +234,10 @@ install_plugin "cloudmanic/herdr-plus"
 install_plugin "senna-lang/herdr-agent-usage"
 
 PLUGIN_DIR="$(herdr plugin config-dir cloudmanic.herdr-plus)"
+if [[ -z "$PLUGIN_DIR" || ! -d "$PLUGIN_DIR" ]]; then
+  echo "herdr-plus config dir missing (plugin install may have failed): '${PLUGIN_DIR}'" >&2
+  exit 1
+fi
 QA_DIR="${PLUGIN_DIR}/quick-actions"
 LAYOUT_DIR="${PLUGIN_DIR}/worktrees"
 
