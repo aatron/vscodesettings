@@ -1,0 +1,12 @@
+# Delete-story launcher.
+# Installed by install.ps1 into herdr-plus quick-actions/.
+# Form asks for story id only; opens a real herdr tab (for gum confirm) and runs
+# worktree-remove.ps1.
+# herdr-plus runs quick-action commands via PowerShell -Command (see new-worktree-dev.toml).
+name = "Delete Story Worktree"
+description = "Remove all worktrees, local branches, and notes for a story id"
+type = "form"
+command = "& \"{{.Home}}\\bin\\worktree-launch.ps1\" remove {{.WorkspaceId}} \"{{.WorkDir}}\" \"{{.Value}}\""
+
+[form]
+prompt = "Story id"

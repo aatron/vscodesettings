@@ -1,0 +1,8 @@
+# Review worktree launcher.
+# Installed by install.ps1 into herdr-plus quick-actions/.
+# Opens a real herdr tab (overlay cannot host interactive gum prompts).
+# herdr-plus runs quick-action commands via PowerShell -Command (see new-worktree-dev.toml).
+name = "New Review Worktree"
+description = "Create review worktrees for each branch on a story"
+type = "command"
+command = "& \"{{.Home}}\\bin\\worktree-launch.ps1\" review {{.WorkspaceId}} \"{{.WorkDir}}\""

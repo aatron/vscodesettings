@@ -6,12 +6,15 @@
 # What it does (never overwrites an existing ~/.config/herdr/config.toml):
 #   1. Installs CLI prerequisites: herdr, gum, git, micro, jq, claude, agent
 #   2. Creates default config.toml if missing (herdr --default-config)
-#   3. Installs herdr plugins (herdr-plus, herdr-agent-usage)
-#   4. Symlinks worktree-make.sh -> ~/bin/make-worktree.sh,
-#      worktree-launch.sh -> ~/bin/worktree-launch.sh, and
-#      worktree-remove.sh -> ~/bin/worktree-remove.sh
-#   5. Installs quick-action TOMLs (dev + dev-windows + review + delete) into herdr-plus
-#   6. Installs the wildcard worktree auto-layout (repo = "*")
+#   3. Installs herdr plugins (herdr-plus, herdr-agent-usage, herdr-reviewr)
+#   4. Applies managed herdr-reviewr plugin config (not root Herdr config)
+#   5. Symlinks worktree-make.sh -> ~/bin/make-worktree.sh,
+#      worktree-launch.sh -> ~/bin/worktree-launch.sh,
+#      worktree-remove.sh -> ~/bin/worktree-remove.sh, and
+#      az-watcher/az-watcher.sh -> ~/bin/az-watche
+#   6. Installs quick-action TOMLs (dev + dev-windows + review + delete + az-sync)
+#      into herdr-plus
+#   7. Installs the wildcard worktree auto-layout (repo = "*")
 #
 # Manual config.toml edits are listed at the end and in README.md.
 #
@@ -23,6 +26,7 @@ LOCAL_BIN="${HOME}/.local/bin"
 TARGET_SCRIPT="${BIN_DIR}/make-worktree.sh"
 TARGET_LAUNCH="${BIN_DIR}/worktree-launch.sh"
 TARGET_REMOVE="${BIN_DIR}/worktree-remove.sh"
+TARGET_AZ_WATCHER="${BIN_DIR}/az-watcher"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -169,7 +173,7 @@ ensure_agent() {
   echo "-> agent: $(command -v agent)"
 }
 
-# --- plugins (idempotent; does not touch config.toml) ----------------------
+# --- plugins (idempotent; does not touch root Herdr config.toml) -----------
 install_plugin() {
   local spec="$1"
   echo "-> plugin: herdr plugin install ${spec}"
@@ -193,6 +197,47 @@ install_file() {
   echo "-> installed: ${dest}"
 }
 
+ensure_reviewr_config() {
+  local plugin_dir cfg tmp
+  plugin_dir="$(herdr plugin config-dir persiyanov.reviewr)"
+  if [[ -z "$plugin_dir" ]]; then
+    echo "reviewr config dir missing (plugin install may have failed)" >&2
+    exit 1
+  fi
+  mkdir -p "$plugin_dir"
+  cfg="${plugin_dir}/config.toml"
+  tmp="$(mktemp)"
+
+  {
+    echo "# BEGIN vscodesettings herdr-reviewr defaults"
+    echo "auto_open = false"
+    echo "toggle_placement = \"overlay\""
+    echo "toggle_direction = \"right\""
+    echo "default_scope = \"branch\""
+    echo "# END vscodesettings herdr-reviewr defaults"
+    echo
+    if [[ -f "$cfg" ]]; then
+      awk '
+        /^# BEGIN vscodesettings herdr-reviewr defaults$/ { skip = 1; next }
+        /^# END vscodesettings herdr-reviewr defaults$/ { skip = 0; next }
+        skip { next }
+        /^[[:space:]]*\[/ { in_table = 1 }
+        !in_table && /^[[:space:]]*(auto_open|toggle_placement|toggle_direction|default_scope)[[:space:]]*=/ { next }
+        { print }
+      ' "$cfg"
+    fi
+  } > "$tmp"
+
+  if [[ -f "$cfg" ]] && cmp -s "$tmp" "$cfg"; then
+    rm -f "$tmp"
+    echo "-> reviewr config: unchanged (${cfg})"
+    return
+  fi
+
+  mv "$tmp" "$cfg"
+  echo "-> reviewr config: installed managed defaults (${cfg})"
+}
+
 # Ensure a script path is executable and Unix-LF (safe for files we symlink to).
 normalize_shell_script() {
   local f="$1"
@@ -209,7 +254,7 @@ fix_example_openers() {
   for f in "$dir"/*.toml; do
     [[ -f "$f" ]] || continue
     case "$(basename "$f")" in
-      new-worktree-*.toml|remove-worktree.toml) continue ;;
+      new-worktree-*.toml|remove-worktree.toml|az-watcher.toml) continue ;;
     esac
     if grep -qE 'command = "open ' "$f"; then
       sed -i 's/command = "open /command = "{{opener}} /g' "$f"
@@ -232,6 +277,8 @@ echo
 echo "=== 2/3 Herdr plugins ==="
 install_plugin "cloudmanic/herdr-plus"
 install_plugin "senna-lang/herdr-agent-usage"
+install_plugin "persiyanov/herdr-reviewr"
+ensure_reviewr_config
 
 PLUGIN_DIR="$(herdr plugin config-dir cloudmanic.herdr-plus)"
 if [[ -z "$PLUGIN_DIR" || ! -d "$PLUGIN_DIR" ]]; then
@@ -249,6 +296,7 @@ echo "=== 3/3 Worktree workflow files ==="
 normalize_shell_script "${SCRIPT_DIR}/worktree-make.sh"
 normalize_shell_script "${SCRIPT_DIR}/worktree-launch.sh"
 normalize_shell_script "${SCRIPT_DIR}/worktree-remove.sh"
+normalize_shell_script "${SCRIPT_DIR}/az-watcher/az-watcher.sh"
 ln -sfn "${SCRIPT_DIR}/worktree-make.sh" "$TARGET_SCRIPT"
 echo "-> script:  ${TARGET_SCRIPT} -> ${SCRIPT_DIR}/worktree-make.sh"
 
@@ -258,10 +306,14 @@ echo "-> launch:  ${TARGET_LAUNCH} -> ${SCRIPT_DIR}/worktree-launch.sh"
 ln -sfn "${SCRIPT_DIR}/worktree-remove.sh" "$TARGET_REMOVE"
 echo "-> remove:  ${TARGET_REMOVE} -> ${SCRIPT_DIR}/worktree-remove.sh"
 
+ln -sfn "${SCRIPT_DIR}/az-watcher/az-watcher.sh" "$TARGET_AZ_WATCHER"
+echo "-> az:      ${TARGET_AZ_WATCHER} -> ${SCRIPT_DIR}/az-watcher/az-watcher.sh"
+
 install_file "${SCRIPT_DIR}/new-worktree-dev.toml"         "${QA_DIR}/new-worktree-dev.toml"
 install_file "${SCRIPT_DIR}/new-worktree-dev-windows.toml" "${QA_DIR}/new-worktree-dev-windows.toml"
 install_file "${SCRIPT_DIR}/new-worktree-review.toml"      "${QA_DIR}/new-worktree-review.toml"
 install_file "${SCRIPT_DIR}/remove-worktree.toml"          "${QA_DIR}/remove-worktree.toml"
+install_file "${SCRIPT_DIR}/az-watcher.toml"              "${QA_DIR}/az-watcher.toml"
 install_file "${SCRIPT_DIR}/worktree-layout.toml"          "${LAYOUT_DIR}/worktree-layout.toml"
 
 # Seeded herdr-plus examples use macOS `open`; rewrite to {{opener}} on Linux/WSL.
@@ -269,7 +321,7 @@ fix_example_openers "$QA_DIR"
 
 echo
 echo "=== Automated install finished ==="
-echo "  (Existing config.toml is never overwritten; defaults are written only if missing.)"
+echo "  (Existing root Herdr config.toml is never overwritten; defaults are written only if missing.)"
 echo
 echo "Manual next steps — see README.md for full snippets:"
 echo "  1. Edit machine paths at the top of:"
@@ -288,6 +340,12 @@ echo "  6. herdr server reload-config"
 echo "     (named sessions: herdr --session <name> server reload-config;"
 echo "      bare 'herdr server reload-config' only hits the default session)"
 echo "  7. Dry-run: prefix+down -> New Dev Worktree"
+echo "  8. Azure sync (az-watcher) — NOT auto-installed, do this by hand:"
+echo "       install the Azure CLI, then:"
+echo "         az login"
+echo "         az devops configure -d organization=https://dev.azure.com/<org> project='<project>'"
+echo "       verify:  az-watcher run --dry-run --window 0"
+echo "       details: ${SCRIPT_DIR}/az-watcher/README.md"
 echo
 echo "If 'claude' or 'agent' is missing in a new terminal, source ~/.bashrc or reopen WSL."
 echo "Primary clones must exist under SRC_ROOT/<repo-name>."
@@ -295,6 +353,6 @@ echo
 herdr plugin list
 echo
 echo "CLI check:"
-for c in herdr gum git micro jq claude agent; do
+for c in herdr gum git micro jq claude agent az flock; do
   printf "  %-8s %s\n" "$c" "$(command -v "$c" 2>/dev/null || echo MISSING)"
 done

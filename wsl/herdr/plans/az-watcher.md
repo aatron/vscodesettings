@@ -1,6 +1,9 @@
 # Plan: `az-watcher` — Azure DevOps → herdr worktree automation
 
-> Status: **planned, not yet implemented.** To be written and tested later.
+> Status: **implemented** (2026-07-28). Code in `wsl/herdr/az-watcher/`; usage docs in
+> `wsl/herdr/az-watcher/README.md`. Verified offline against stubbed `az`/`herdr` and in a
+> real-git sandbox; **not yet run live against Azure**, so do
+> `az-watcher run --dry-run --window 0` first.
 
 ## Context
 
@@ -10,136 +13,168 @@ actions → `worktree-make.sh` / `worktree-remove.sh`). This adds a **headless**
 
 - **New Review** — when a PR has been assigned to me (I'm a reviewer) in the last ~5 minutes,
   create a **review** worktree for that PR's repo + source branch.
-- **Remove story** — when a story's PR(s) have been completed/merged/abandoned in the last
-  ~5 minutes, remove the corresponding local worktree, local git branch, and notes file(s);
+- **Remove story** — when a PR of mine (as creator *or* reviewer) has been completed/abandoned
+  in the last ~5 minutes, remove that repo's local worktree, local git branch and notes file;
   when a story folder empties, remove the folder too.
 
 For now it's run manually; **eventually a cron job every 5 minutes**, so everything must be
 non-interactive, idempotent, and stateless (the laptop can reboot with no state to lose).
 
 ### Decisions (confirmed with the user)
-- **Story id = Azure Boards work item id.** The **slug is not in Azure** → az-watcher derives
-  a 2–4 word slug from the work item **title** (deterministic ⇒ multi-repo PRs of one story
-  share the same `{id}_{slug}` folder). Isolated in one `slug_for_story()` function the user
-  can override. Removal reads the slug from the on-disk folder name, so it needs no Azure call.
-- **New Review scope = just the assigned PR** (one repo/branch per assignment).
+- **Story id + slug come from the PR source branch** when its last segment looks like
+  `<id>-<slug>` (`refs/heads/trade-central/parker/22831-order-entry-fctg-forms` → `22831` +
+  `order-entry-fctg-forms`). This costs no extra `az` call and already matches the folder
+  names this workflow produces, because branch and folder share that suffix. **Fallback:** the
+  PR's linked work item id, with the slug derived from its title by `slug_for_story()`
+  (lowercase, hyphenated, first 4 words) — the single function to override. Removal reads the
+  slug from the on-disk folder name, so it needs no Azure call at all.
+- **New Review scope = just the assigned PR** (one repo/branch per assignment). PRs *I*
+  created are skipped even when I'm listed as a reviewer — they already have a dev worktree.
+- **Removal scope = creator PRs *and* reviewer PRs.** Reviewer PRs retire review worktrees;
+  my own PRs retire the development worktrees they were raised from. (The original plan had
+  reviewer-only, which would never have cleaned up a single one of the dev worktrees actually
+  on disk.)
+- **PRs with no story id at all** (no `<id>-<slug>` in the branch, no linked work item — e.g.
+  PR 4322 `adr-005-central-api-modular-monolith`) are **skipped and notified**, through the
+  same channel that announces a created review.
+- **Notifications = `herdr notification show`**, best-effort: created / cleaned up / skipped /
+  failed / held-back all notify *and* log. Quiet no-ops (worktree already exists, story
+  already gone) log only, so a 5-minute cron never nags.
+- **Repo name → clone dir = spaces become underscores** (`FCTG Monorepo` →
+  `~/source/repos/FCTG_Monorepo`). No lookup table; a missing clone is reported, never guessed.
 - **Auth = `az login`** + `az devops configure -d organization=… project=…` defaults (org/
-  project also overridable via env). No PAT file.
-- **Removal = stateless, 5-minute window, per-PR:** act on PRs that *closed* in the window;
-  remove that PR's worktree/branch/notes; drop the story folder when it becomes empty.
-- **"Last 5 minutes" is stateless:** New Review filters active reviewer-PRs by `creationDate`
-  in the window; Remove filters reviewer-PRs by `closedDate` in the window. Window is a
-  `--window <min>` flag (default 5). Idempotency (below) makes overlapping runs safe.
+  project also overridable via `AZDO_ORG`/`AZDO_PROJECT`). No PAT file.
+- **"Last 5 minutes" is stateless:** New Review filters active reviewer-PRs by `creationDate`;
+  Remove filters closed PRs by `closedDate`. `--window <min>` (default 5); **`--window 0`
+  disables the filter** for a one-off backfill. Idempotency makes overlapping runs safe.
+- **Uncommitted changes are kept, not deleted.** az-watcher passes `WT_SKIP_DIRTY=1`, so a
+  dirty worktree survives (and keeps its story folder) and you are notified; `--force-dirty`
+  overrides. Manual `worktree-remove.sh` behaviour is unchanged.
 
-### Verified (Azure CLI, azure-devops extension)
-- `az repos pr list --reviewer <me> --status active|completed|abandoned -o json` → PRs with
-  `pullRequestId`, `title`, `status`, `sourceRefName`, `repository.name`, `creationDate`,
-  `closedDate`.
-- `az repos pr work-item list --id <pr> -o json` → linked work item id(s) (the story id).
+### Verified (Azure CLI, azure-devops extension, live against the real org)
+- `az repos pr list --reviewer|--creator <me> --status active|completed|abandoned -o json` →
+  PRs with `pullRequestId`, `title`, `status`, `sourceRefName`, `repository.name`,
+  `creationDate`, `closedDate`, `createdBy.uniqueName`. Sorted newest-first, so `--top N`
+  yields the most recent N.
+- `az repos pr work-item list --id <pr> -o json` → linked work item id(s); **can be empty**.
 - `az boards work-item show --id <id> --query "fields.\"System.Title\"" -o tsv` → title→slug.
 - `az account show --query user.name -o tsv` → signed-in user (default `--reviewer` value).
+- **WSL gotcha:** `az` may resolve to the Windows build under `/mnt/c`. It emits CRLF and
+  tries to encode output as cp1252, which *silently truncates* JSON containing non-ASCII.
+  Every call therefore goes through a wrapper that sets `PYTHONIOENCODING=utf-8` and strips CR.
+- **`az` reads stdin.** Calling it inside a `while read` loop makes it swallow the rest of the
+  loop's input, so the loop stops after the first PR needing an az lookup. Found in the first
+  live dry-run (1 of 4 PRs processed). Both loops now read from **fd 4**, and `az` plus the two
+  driven scripts get an explicit `</dev/null`.
 
 ## New: `wsl/herdr/az-watcher/`
 
 ```
 az-watcher/
   az-watcher.sh     # entry point (new-review + remove-merged), non-interactive
-  README.md         # usage, az prereqs, manual run, cron-later instructions
+  README.md         # usage, az prereqs, manual run, cron instructions
 ```
 
 ### `az-watcher.sh`
-- **Config / prereqs:** requires `az` (with `azure-devops` ext), `git`, `jq`; herdr for
-  creation. Reads optional env `AZDO_ORG`, `AZDO_PROJECT` (else uses `az devops` defaults) and
-  `AZ_WATCHER_ME` (else `az account show`). Adds `--org/--project` to az calls only when set.
-- **CLI:** `az-watcher [new-review|remove-merged|run] [--window N] [--dry-run] [--me <id>]`.
-  Default `run` = both. `--dry-run` prints intended actions without creating/removing.
-- **Locking:** `flock` on `${XDG_RUNTIME_DIR:-/tmp}/az-watcher.lock` so cron runs never overlap.
-- **Logging:** timestamped lines to stdout (cron redirects to a log).
-- **`slug_for_story()`** — `az boards work-item show` title → lowercase, strip non-alnum,
-  hyphenate, keep first 4 words. Single point to customize.
-- **new-review:**
-  1. `me = ${AZ_WATCHER_ME:-$(az account show --query user.name -o tsv)}`.
-  2. `az repos pr list --reviewer "$me" --status active -o json`; keep PRs with
-     `creationDate` within the window.
-  3. Per PR: `repo=.repository.name`, `branch=.sourceRefName` (strip `refs/heads/`),
-     `storyId` = first `az repos pr work-item list` id, `slug=slug_for_story(storyId)`.
-  4. Write a one-line `repo:branch` file and invoke the review pipeline **non-interactively**:
-     `WT_ID=$storyId WT_SLUG=$slug WT_BRANCHES_FILE=$tmp "$HOME/bin/make-worktree.sh" review`.
-     (Reuses all existing worktree/tab/notes logic.) Idempotency is enforced in
-     `worktree-make.sh` (skips if the repo worktree already exists), so re-runs are safe.
-- **remove-merged:**
-  1. `az repos pr list --reviewer "$me" --status completed -o json` and `--status abandoned`;
-     keep PRs with `closedDate` within the window.
-  2. Per PR: `storyId` = linked work item id, `repo=.repository.name`.
-  3. Invoke removal **non-interactively, per repo**:
-     `WT_ID=$storyId WT_REPO=$repo WT_ASSUME_YES=1 "$HOME/bin/worktree-remove.sh"`.
-     It finds the local `${storyId}_*` folder(s), removes just that repo's worktree + local
-     branch + `${id}-${slug}-${repo}.txt`, and deletes the story folder when it's the last one.
-     Missing = no-op (safe for overlapping runs); remote branches untouched.
+- **Config / prereqs:** requires `az` (with `azure-devops` ext), `git`, `jq`, `flock`; herdr
+  for creation. Reads optional env `AZDO_ORG`, `AZDO_PROJECT`, `AZ_WATCHER_ME`. Adds
+  `--org/--project` to az calls only when set.
+- **CLI:** `az-watcher [new-review|remove-merged|run] [--window N] [--dry-run] [--force-dirty]
+  [--me <id>]`. Default `run` = both.
+- **Locking:** `flock -n -E 99` on `${XDG_RUNTIME_DIR:-/tmp}/az-watcher.lock`, taken by
+  re-exec before argument parsing; a run that finds it held logs and exits 0.
+- **Logging:** timestamped lines on fd 3 (a dup of the real stdout), so log output can never
+  contaminate the stdout of a function whose output is being captured.
+- **new-review:** active reviewer PRs → drop mine → window filter → resolve story → verify the
+  local clone exists → write a one-line `repo:branch` file → `WT_ID WT_SLUG WT_BRANCHES_FILE
+  make-worktree.sh review`. Exit 3 from that script means "already existed" and stays silent.
+  Bails out early (with a notification) when no herdr session is running.
+- **remove-merged:** creator+reviewer × completed+abandoned, deduplicated by PR id → window
+  filter → resolve story → `WT_ID WT_REPO WT_ASSUME_YES=1 WT_SKIP_DIRTY=1
+  worktree-remove.sh`. Exit 3 = nothing local (silent), 5 = dirty (notify).
 
 ## Modifications to existing scripts (small, additive)
 
 ### `wsl/herdr/worktree-make.sh` — non-interactive hooks + idempotency
 - `NONINTERACTIVE=1` when `WT_ID` and `WT_SLUG` are both set. When set: skip the tty-reattach
   block and `gum`; take `ID=$WT_ID`, `SLUG=$WT_SLUG`; dev repos from `WT_REPOS`; review
-  branches from `WT_BRANCHES_FILE` (use as `$BRANCHES`, skip the placeholder heredoc/warning).
-  Only `need gum` in interactive mode.
-- **Idempotency guard** in `make_worktree_new` / `make_worktree_existing`: if
-  `${STORY_DIR}/${repo}/.git` already exists, log "exists, skipping" and return (helps both
-  the watcher and manual re-runs).
+  branches from `WT_BRANCHES_FILE` (skipping the placeholder heredoc/warning).
+- **Idempotency guard** (`worktree_present`): if `${STORY_DIR}/${repo}/.git` exists, log
+  "exists, skipping" and return — no fetch, no herdr call, no tab churn.
+- **Per-repo failures are non-fatal** in non-interactive mode (`repo_fail`), so one bad repo
+  cannot abort a cron run; still fatal when a human asked for those exact repos.
+- **Exit 3** when nothing was created but something already existed, so automation can tell a
+  no-op re-run apart from real work or a failure.
 
-### `wsl/herdr/worktree-remove.sh` — non-interactive + single-repo + id-glob
-- If `WT_ID` set: use it (skip the id/slug prompts). If `WT_SLUG` empty, **glob** matching
-  story folders `${ID}_*` across the candidate roots instead of an exact `${ID}_${SLUG}`.
-- If `WT_ASSUME_YES=1`: skip the `gum confirm`.
-- If `WT_REPO` set: operate on **only** that repo's worktree (remove worktree + local branch +
-  that repo's notes file `${ID}-${SLUG}-${WT_REPO}.txt`); after removal, if the story folder
-  has no remaining worktrees, delete the folder + leftover sidecars/notes. Unset ⇒ current
-  whole-story behavior.
+### `wsl/herdr/worktree-remove.sh` — non-interactive + single-repo + dirty guard
+- `WT_ID` / `WT_ASSUME_YES` / `${ID}-*` globbing were already in place.
+- `WT_REPO` set ⇒ operate on **only** that repo's worktree (worktree + local branch + that
+  repo's `${ID}-${SLUG}-${repo}.txt` and `.notespath-${repo}`). Unset ⇒ whole story.
+- `WT_SKIP_DIRTY=1` ⇒ refuse to delete a worktree with uncommitted/untracked changes.
+- **The story folder is deleted only once no worktrees remain in it** (`story_has_worktrees`),
+  which is what makes single-repo removal and dirty-keeps correct for multi-repo stories.
+- **Exit codes:** 0 removed something, 3 nothing matched, 5 nothing removed because every
+  match was dirty.
 
 ### `wsl/herdr/worktree-launch.sh` — manual trigger from herdr
-- Add an `az-sync` action: `SCRIPT="${HOME}/bin/az-watcher"; RUN_ARGS="run"; label="Sync Azure Reviews"`
-  so a quick action can run az-watcher in a visible tab.
+- `az-sync` action → `~/bin/az-watcher run`, label "Sync Azure Reviews".
 
 ### `wsl/herdr/az-watcher.toml` (new quick action)
-- `name = "Sync Azure Reviews"`, `command = '"$HOME/bin/worktree-launch.sh" az-sync {{.WorkspaceId}} "{{.WorkDir}}"'`.
+- `name = "Sync Azure Reviews"`, `command = '"$HOME/bin/worktree-launch.sh" az-sync
+  {{.WorkspaceId}} "{{.WorkDir}}"'`.
 
 ### `wsl/herdr/install.sh`
 - `normalize_shell_script` + symlink `az-watcher/az-watcher.sh` → `~/bin/az-watcher`.
-- `install_file` the `az-watcher.toml` quick action into herdr-plus `quick-actions/`.
-- Add az prereq note to the "Manual next steps" echo (no auto-install of `az`).
+- `install_file` `az-watcher.toml` into herdr-plus `quick-actions/` (and exempt it from
+  `fix_example_openers`).
+- Azure prereq step in the "Manual next steps" echo (no auto-install of `az`); `az` and
+  `flock` added to the closing CLI check.
 
 ### Docs
-- `az-watcher/README.md`: `az login` + `az devops configure -d organization=… project=…`,
-  manual `az-watcher run --dry-run` first, then `run`; the **cron-later** line
-  (`*/5 * * * * $HOME/bin/az-watcher run >> ~/.local/state/az-watcher.log 2>&1`, guarded by
-  flock); assumptions (below).
-- Main `wsl/herdr/README.md`: short "Azure sync (az-watcher)" section pointing at it and the
-  **Sync Azure Reviews** quick action.
+- `az-watcher/README.md` — prereqs, usage, story-naming rules, notifications, safety, cron
+  line, assumptions, and the exit-code contract it relies on.
+- `wsl/herdr/README.md` — "Azure sync (`az-watcher`)" section + two Daily-use bullets.
 
-## Verification
-1. `bash -n` on `az-watcher.sh` and the three edited scripts; grep for username literals.
-2. **Offline unit check** (no Azure): run `az-watcher.sh` with a stubbed `az` on `PATH`
-   returning canned JSON (one active reviewer PR; one recently-completed PR) and `--dry-run`;
-   confirm it would call `make-worktree.sh review` / `worktree-remove.sh` with the right
-   `WT_*` env. (Sandbox in scratchpad; does not touch the repo.)
-2b. Non-interactive hooks directly: `WT_ID=99999 WT_SLUG=dry-run WT_BRANCHES_FILE=… make-worktree.sh review`
-    creates the review worktree with no prompts; a second run logs "exists, skipping".
-    `WT_ID=99999 WT_REPO=repo-a WT_ASSUME_YES=1 worktree-remove.sh` removes just that repo.
-3. **Live, manual, dry-run first:** `az login`; `az-watcher run --dry-run` and eyeball the
-   planned actions against real assignments; then `az-watcher run`.
-4. Assign yourself a test PR → `new-review` creates the review worktree (tabs `notes/claude/
-   cursor/bash`). Complete/abandon it → within a window, `remove-merged` tears it down.
+## Verification performed
+1. `bash -n` on `az-watcher.sh` and the four edited scripts; grepped for username literals
+   (none outside the pre-existing `BRANCH_PREFIX`).
+2. **Offline unit check** — stubbed `az`/`herdr`/make/remove on `PATH` with canned JSON
+   modelled on the real API responses. Confirmed: branch-derived ids, work-item fallback
+   (`23346-nexus-user-identity-sync`), no-id PR skipped **and notified**, own PR excluded from
+   review, window filter and `--window 0`, dedup across roles/statuses, exit-3 silence,
+   exit-5 held-back notification, and the exact `WT_*` env handed to each script.
+3. **Real-git sandbox** for the hooks themselves (`HERDR_CONFIG_PATH` + stub herdr whose
+   `worktree create` really runs `git worktree add`): non-interactive review creation with
+   stdin closed; second run → exit 3; dirty repo with `WT_SKIP_DIRTY=1` → exit 5, nothing
+   removed; single-repo removal → only that repo goes, branch deleted, folder kept; repeat →
+   exit 3; last repo removed → folder removed; unknown story → exit 3.
+4. **Live dry-run against the real org** (read-only; creates, removes and notifies nothing).
+   `run --dry-run --window 0`: all 4 active reviewer PRs resolved (including the work-item
+   fallback `23376-nexus-passwordless-redis-service` for the id-less branch
+   `feat/connection-string-credentials`), PR 4322 correctly skipped; on the removal side 100
+   closed PRs deduped, 94 resolved to stories, 6 skipped for want of an id.
+   `run --dry-run` at the default 5m window: correctly silent. This is also where the stdin bug
+   above surfaced, and the run was repeated after fixing it.
+5. **Still to do (live, for real):** `az-watcher run`. Then assign yourself a test PR →
+   `new-review` creates the review worktree (tabs notes/claude/cursor/bash); complete/abandon
+   it → `remove-merged` tears it down within a window.
+6. **Not yet done:** `install.sh` has not been re-run, so `~/bin/az-watcher` and the
+   **Sync Azure Reviews** quick action are not installed on this machine yet.
 
 ## Notes / assumptions / limitations
-- **Azure repo name == local clone dir** under `SRC_ROOT`. Documented; a name-map can be added
-  later if they diverge.
-- **herdr session must be running** for creation (so `herdr worktree create` + herdr-plus
-  auto-layout apply). Fine for manual use and for cron while a session is up.
-- **Stateless windowing trade-off:** New Review keys on PR `creationDate`; a *reassignment* to
-  an older PR isn't detected (only newly-created reviewer PRs are). Acceptable per the "keep it
-  simple, no state" decision; the idempotency guard prevents duplicates.
-- Removal only ever deletes **local** branches/worktrees/notes for stories tied to *your*
-  reviewer PRs; remote branches and others' work are untouched. `--dry-run` shows exactly what
-  would be removed.
+- **herdr session must be running** for creation; az-watcher detects this and notifies rather
+  than failing. Removal needs no session (git fallback).
+- **Stateless windowing trade-off:** New Review keys on PR `creationDate`, so being added as a
+  reviewer to an *older* PR isn't detected. Accepted per "keep it simple, no state";
+  `--window 0` backfills and the idempotency guard prevents duplicates.
+- Removal only ever deletes **local** branches/worktrees/notes; remote branches and others'
+  work are untouched. `--dry-run` shows exactly what would go.
+- Multiple PRs for one story in the same repo collide on `{story}/{repo}`: first wins, second
+  is a no-op — same limitation `worktree-make.sh` documents for manual runs.
+- **No silent caps:** each query fetches at most `PR_TOP` (50) PRs newest-first. If a page comes
+  back full *and* its oldest entry is still inside the window, a `note:` line says older PRs
+  were not examined. Unreachable at a 5-minute window, so cron logs stay quiet.
+- **`--window 0` is a big hammer for `remove-merged`** — it considers every closed PR (~100
+  here) and so cleans up every local story whose PR has ever closed. Harmless for
+  `new-review`. Dry-run it first; the dirty guard is the backstop.
 - `az boards`/`az repos` are part of the `azure-devops` extension (auto-installs on first use).

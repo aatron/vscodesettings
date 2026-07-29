@@ -1,8 +1,10 @@
 # Delete-story launcher.
 # Installed by install.sh into herdr-plus quick-actions/.
 # Form asks for story id only; opens a real herdr tab (for gum confirm) and runs
-# worktree-remove.sh, which finds every {id}_* story folder and deletes its
-# worktrees, branches, and notes after confirmation.
+# worktree-remove.sh, which finds every {id}-* (and legacy {id}_*) story folder
+# and — after a confirmation that warns the worktrees themselves are deleted —
+# removes each worktree via herdr (workspace + checkout + sidebar entry, with a
+# git fallback), its local branch, and its notes.
 name = "Delete Story Worktree"
 description = "Remove all worktrees, local branches, and notes for a story id"
 type = "form"
