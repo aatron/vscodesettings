@@ -7,7 +7,7 @@
 # target script into that pane via `herdr pane run`.
 #
 # Usage:
-#   worktree-launch.sh <development|development-windows|review> [ws] [cwd]       -> make-worktree.sh <type>
+#   worktree-launch.sh <development|review> [ws] [cwd]                           -> make-worktree.sh <type>
 #   worktree-launch.sh remove [ws] [cwd] [story-id]                              -> worktree-remove.sh
 #   worktree-launch.sh az-sync [ws] [cwd]                                        -> az-watcher run
 #
@@ -20,13 +20,12 @@ STORY_ID="${4:-}"
 
 case "$ACTION" in
   development)         SCRIPT="${HOME}/bin/make-worktree.sh"; RUN_ARGS="$ACTION"; label="New Dev Worktree" ;;
-  development-windows) SCRIPT="${HOME}/bin/make-worktree.sh"; RUN_ARGS="$ACTION"; label="New Dev Worktree (Windows)" ;;
   review)              SCRIPT="${HOME}/bin/make-worktree.sh"; RUN_ARGS="$ACTION"; label="New Review Worktree" ;;
   remove)              SCRIPT="${HOME}/bin/worktree-remove.sh"; RUN_ARGS="$STORY_ID"; label="Delete Story Worktree" ;;
   # az-watcher is non-interactive; the tab just makes its log visible.
   az-sync)             SCRIPT="${HOME}/bin/az-watcher"; RUN_ARGS="run"; label="Sync Azure Reviews" ;;
   *)
-    echo "usage: $0 <development|development-windows|review|remove|az-sync> [workspace_id] [cwd] [story-id]" >&2
+    echo "usage: $0 <development|review|remove|az-sync> [workspace_id] [cwd] [story-id]" >&2
     exit 1 ;;
 esac
 
@@ -51,4 +50,9 @@ pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"
 }
 
 # Submit into the new pane's shell (returns immediately; script runs interactively).
-herdr pane run "$pane" "${SCRIPT} ${RUN_ARGS}"
+herdr pane run "$pane" "${SCRIPT} ${RUN_ARGS}" || {
+  echo "herdr pane run failed for pane ${pane}" >&2
+  exit 1
+}
+
+exit 0

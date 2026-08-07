@@ -2,7 +2,7 @@
 #
 # make-worktree.sh
 # Create a multi-repo herdr worktree structure for an Azure DevOps story.
-# Three types: development, development-windows, and review.
+# Two types: development and review.
 #
 # Tabs come from herdr-plus Worktree Auto-Layout (worktree-layout.toml,
 # repo = "*"): notes, claude, cursor, bash at each worktree root. Layouts cannot
@@ -17,24 +17,38 @@
 #                              bash   -> "{repo} bash",      bare shell
 #                              Both agents start in their auto permission mode
 #                              (see CLAUDE_CMD / CURSOR_CMD below).
-#   development-windows     -> notes as above; close the claude/cursor tabs
-#                              (leaving notes + "{repo} bash") and open a native
-#                              Windows PowerShell tab per repo via wt.exe,
-#                              titled {id}-{slug}-{repo}.
 # Also creates worktrees + sidecars.
 #
-# Git behavior on create:
-#   development / development-windows
-#               -> fetch origin, then create the new branch
-#                  feature/aaron/<id>-<slug> from the LATEST default branch
-#                  (origin/<default>), checked out in the worktree. These two
-#                  types differ ONLY in the worktree root (below) and tabs.
-#   review      -> fetch origin, then check out each existing linked branch
-#                  at its latest remote state.
+# Git behavior on create - THE SCRIPT OWNS THE BRANCH, NOT HERDR:
+#   `herdr worktree create --base <ref>` silently IGNORES --base when the local
+#   branch already exists: it just checks that branch out wherever it happens to
+#   point and still reports success. A branch left behind by an earlier story
+#   (a removal that could not delete it, a worktree deleted by hand, another
+#   tool) therefore produced a worktree pinned to an old commit - "you are N
+#   commits behind" - with nothing in the output to say so.
+#   So every worktree is now created in this order:
+#     1. `git fetch --prune origin`, WITH the exit status checked (one retry).
+#        A failed fetch aborts the repo - never fall back to a stale origin.
+#     2. `git remote set-head origin --auto` so refs/remotes/origin/HEAD (which
+#        plain `git fetch` never updates) still names the real default branch.
+#     3. Resolve the base to an explicit commit sha and verify it exists.
+#     4. Put the local branch at exactly that sha - create it, fast-forward a
+#        leftover branch that holds no unique commits, or refuse (see below).
+#     5. Call herdr, then VERIFY the new worktree's HEAD is that sha, repairing
+#        a clean worktree once with `git reset --hard` before giving up.
+#   development -> base is origin/<default branch>
+#   review      -> base is origin/<linked branch>
 #   all types   -> the branch's upstream is pointed at its OWN name on origin
 #                  (see set_push_upstream), so a plain `git push` from the
-#                  worktree creates/updates origin/<branch> and can neve
+#                  worktree creates/updates origin/<branch> and can never
 #                  target the default branch.
+#
+# When the local branch already exists AND holds commits that the base does not,
+# the script refuses rather than silently hand back old code or silently discard
+# work. It prints those commits and two opt-ins:
+#   WT_REUSE_BRANCH=1  keep the existing branch as-is (resume the story; the
+#                      script reports how far behind the base it is)
+#   WT_RESET_BRANCH=1  discard the unique commits and start from the base
 #
 # Folder structure produced (no feature/aaron prefix on the path):
 #   <herdr [worktrees].directory>/<type>/
@@ -48,7 +62,7 @@
 #   Set BOTH WT_ID and WT_SLUG and every prompt is skipped — no tty, no gum.
 #     WT_ID             story id            (required to enable this mode)
 #     WT_SLUG           story slug          (required to enable this mode)
-#     WT_REPOS          csv of repos        (development / development-windows)
+#     WT_REPOS          csv of repos        (development)
 #     WT_BRANCHES_FILE  file of "<repo>:<branch>" lines (review; replaces the
 #                       placeholder branch list)
 #   Creating a worktree that already exists is a no-op ("exists, skipping"), and
@@ -56,8 +70,8 @@
 #   cron are safe.
 #
 # Exit codes:
-#   0  at least one worktree was created
-#   1  bad usage / missing input / nothing could be attempted
+#   0  at least one worktree was created and verified
+#   1  bad usage / missing input / at least one repo failed
 #   3  nothing to do — every requested repo already had a worktree
 #
 set -euo pipefail
@@ -69,12 +83,6 @@ SRC_ROOT="$HOME/source/repos"       # where your primary repo clones live
 BRANCH_PREFIX="feature/aaron"       # branch name only: feature/aaron/<id>-<slug>
 # Story worktree base comes from Herdr config [worktrees].directory
 # (this workflow uses ~/source/worktrees). Set that in ~/.config/herdr/config.toml.
-#
-# Optional overrides for the development-windows type. Leave BOTH empty to
-# auto-derive — this keeps the script portable across machines (no hardcoded
-# username; the Windows user profile is discovered at runtime).
-WINDOWS_WORKTREE_ROOT=""             # empty => <WindowsUserProfile>/source/worktrees
-WIN_POWERSHELL=""                    # empty => pwsh.exe if present, else powershell.exe
 #
 # Commands the claude/cursor tabs start, both in their "auto" permission mode:
 #   claude --permission-mode auto  -> auto-accepts safe work, still asks for the rest
@@ -94,8 +102,8 @@ CURSOR_CMD="agent --auto-review"
 # ===========================================================================
 
 TYPE="${1:-}"
-[[ "$TYPE" == "development" || "$TYPE" == "development-windows" || "$TYPE" == "review" ]] || {
-  echo "usage: $0 <development|development-windows|review>" >&2; exit 1; }
+[[ "$TYPE" == "development" || "$TYPE" == "review" ]] || {
+  echo "usage: $0 <development|review>" >&2; exit 1; }
 
 # Non-interactive when the caller supplies both the id and the slug: no tty is
 # reattached, gum is never needed, and per-repo failures are non-fatal.
@@ -105,9 +113,11 @@ if [[ -n "${WT_ID:-}" && -n "${WT_SLUG:-}" ]]; then
 fi
 
 # Counters that decide the exit code (see header): a run that only re-found
-# existing worktrees reports 3 so automation can stay quiet about it.
+# existing worktrees reports 3 so automation can stay quiet about it, and any
+# repo-level failure makes the whole run exit non-zero so it cannot pass unnoticed.
 CREATED=0
 SKIPPED=0
+FAILED=0
 
 # herdr-plus quick actions run with stdin = /dev/null. Prefer duplicating the
 # pane PTY from stdout (fd 1); fall back to the controlling tty.
@@ -205,57 +215,18 @@ setup_repo_tabs() {
   return 1
 }
 
-# Open a native Windows PowerShell tab in Windows Terminal for a repo worktree.
-# Title: {id}-{slug}-{repo}; starting dir: the worktree's Windows (C:\...) path.
-open_windows_terminal() {
-  local repo="$1" winpath
-  winpath="$(wslpath -w "${STORY_DIR}/${repo}")"
-  wt.exe -w 0 new-tab --title "${ID}-${SLUG}-${repo}" \
-    --startingDirectory "$winpath" "$WIN_POWERSHELL" 2>/dev/null \
-    || "$WIN_POWERSHELL" -NoProfile -Command \
-         "wt -w 0 new-tab --title '${ID}-${SLUG}-${repo}' -d '${winpath}' ${WIN_POWERSHELL}" 2>/dev/null \
-    || echo "WARNING: could not open Windows Terminal tab for ${repo} (is Windows Terminal installed?)" >&2
-}
-
-# development-windows: wait for the auto-layout tabs, close claude+curso
-# (Claude/Cursor run natively on Windows instead), keep notes + "{repo} bash",
-# then open the native Windows PowerShell tab.
-windows_repo_tabs() {
-  local ws="$1" repo="$2"
-  local wt="${STORY_DIR}/${repo}" notes; notes="$(repo_notes_path "$repo")"
-  local deadline=$((SECONDS + 20))
-  local notes_tab="" claude_tab="" cursor_tab="" bash_tab="" json
-  while (( SECONDS < deadline )); do
-    json="$(herdr tab list --workspace "$ws" 2>/dev/null || true)"
-    notes_tab="$(tab_id_by_label "$json" "$ws" notes)"
-    claude_tab="$(tab_id_by_label "$json" "$ws" claude)"
-    cursor_tab="$(tab_id_by_label "$json" "$ws" cursor)"
-    bash_tab="$(tab_id_by_label "$json" "$ws" bash)"
-    if [[ -n "$notes_tab" && -n "$claude_tab" && -n "$cursor_tab" && -n "$bash_tab" ]]; then
-      herdr tab close "$claude_tab"
-      herdr tab close "$cursor_tab"
-      herdr tab rename "$notes_tab" "notes-${ID}-${SLUG}"
-      herdr tab rename "$bash_tab" "${repo} bash"
-      run_in_tab "$ws" "$notes_tab" "$wt" "micro $(printf '%q' "$notes")" || true
-      open_windows_terminal "$repo"
-      return 0
-    fi
-    sleep 0.2
-  done
-  echo "WARNING: timed out waiting for notes/claude/cursor/bash tabs in workspace ${ws}" >&2
-  open_windows_terminal "$repo"   # still open the Windows tab
-  return 1
-}
 
 ask() { gum input --prompt "$1 > " --placeholder "$2"; }
 
 # A repo-level problem. Fatal when a human is driving (they asked for exactly
-# these repos); a warning in non-interactive mode so one bad repo cannot abort a
-# cron run that still has other repos to create.
+# these repos); counted and reported in non-interactive mode so one bad repo
+# cannot abort a cron run — but the run still exits non-zero at the end.
+# Always returns 1, so every call site reads `repo_fail "..." || return 1`.
 repo_fail() {
-  echo "$1" >&2
-  (( NONINTERACTIVE )) && return 1
-  exit 1
+  FAILED=$((FAILED + 1))
+  echo "ERROR: $1" >&2
+  (( NONINTERACTIVE )) || exit 1
+  return 1
 }
 
 # Idempotency: a worktree that is already checked out is left completely alone
@@ -318,47 +289,196 @@ resolve_worktree_root() {
   printf '%s\n' "$dir"
 }
 
-# Resolve the development-windows story root as a WSL path under the Windows
-# user profile. Portable: no hardcoded username — USERPROFILE is discovered at
-# runtime via Windows PowerShell, then mapped to a /mnt/c/... path.
-resolve_windows_root() {
-  if [[ -n "$WINDOWS_WORKTREE_ROOT" ]]; then
-    printf '%s\n' "$WINDOWS_WORKTREE_ROOT"; return
-  fi
-  local up
-  up="$(powershell.exe -NoProfile -NonInteractive \
-          -Command "[Environment]::GetFolderPath('UserProfile')" 2>/dev/null | tr -d '\r')"
-  [[ -n "$up" ]] || { echo "cannot resolve Windows user profile from WSL" >&2; return 1; }
-  printf '%s/source/worktrees\n' "$(wslpath -u "$up")"
+# Pick the worktree root + type subfolder.
+WORKTREE_ROOT="$(resolve_worktree_root)"
+SUBFOLDER="$TYPE"
+echo "-> worktree root (from herdr [worktrees].directory): ${WORKTREE_ROOT}"
+
+# ---------------------------------------------------------------------------
+# Git: getting the base right
+# ---------------------------------------------------------------------------
+
+# Resolve a ref to a full commit sha; prints nothing and fails when it does not
+# exist.
+resolve_commit() {
+  git -C "$1" rev-parse --verify --quiet "$2^{commit}" 2>/dev/null
 }
 
-# Pick the worktree root + type subfolder. development-windows lives under the
-# Windows (/mnt/c) user path so Windows-native tooling can open the files; it
-# still uses the "development" subfolder and the development git flow.
-if [[ "$TYPE" == "development-windows" ]]; then
-  WORKTREE_ROOT="$(resolve_windows_root)"
-  SUBFOLDER="development"
-  echo "-> worktree root (Windows user path): ${WORKTREE_ROOT}"
-  # Native Windows PowerShell for the per-repo tabs (auto-pick if unset).
-  if [[ -z "$WIN_POWERSHELL" ]]; then
-    if command -v pwsh.exe >/dev/null 2>&1; then WIN_POWERSHELL="pwsh.exe"; else WIN_POWERSHELL="powershell.exe"; fi
-  fi
-else
-  WORKTREE_ROOT="$(resolve_worktree_root)"
-  SUBFOLDER="$TYPE"
-  echo "-> worktree root (from herdr [worktrees].directory): ${WORKTREE_ROOT}"
-fi
+# Fetch, and MEAN it. A fetch that fails (expired credentials, network, a stale
+# index.lock, a concurrent gc) used to be ignored, after which the worktree was
+# cut from whatever origin/<default> happened to be — the exact "N commits
+# behind" symptom. One retry, then the caller aborts the repo.
+update_remote() {
+  local src="$1" attempt
+  for attempt in 1 2; do
+    if (( attempt == 1 )); then
+      echo "-> fetch:  git fetch --prune origin in ${src}"
+    else
+      echo "-> fetch:  git fetch --prune origin in ${src} (retry ${attempt})"
+    fi
+    if git -C "$src" fetch --prune origin; then
+      return 0
+    fi
+    echo "WARNING: git fetch --prune origin failed in ${src}" >&2
+    (( attempt == 1 )) && sleep 3
+  done
+  return 1
+}
+
+# `git fetch` never updates refs/remotes/origin/HEAD, so a clone made before the
+# remote's default branch was renamed — or one where the ref was never written —
+# keeps pointing at the wrong branch forever. Re-derive it from the remote.
+# Best effort: offline, the cached ref (or the fallbacks below) still works.
+sync_origin_head() {
+  git -C "$1" remote set-head origin --auto >/dev/null 2>&1 || true
+}
 
 # Resolve a repo's default branch (main/master/...), locally if possible.
 default_branch() {
-  local src="$1" d
+  local src="$1" d candidate
   d="$(git -C "$src" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   d="${d#origin/}"
   if [[ -z "$d" ]]; then
     d="$(git -C "$src" ls-remote --symref origin HEAD 2>/dev/null \
          | awk '/^ref:/{sub("refs/heads/","",$2); print $2; exit}')"
   fi
-  echo "${d:-main}"
+  # Only trust it if the matching remote-tracking ref actually exists: the old
+  # blind `main` fallback could name a branch that is real but is NOT the
+  # default (or does not exist at all, which herdr then rejects outright).
+  if [[ -n "$d" ]] && resolve_commit "$src" "refs/remotes/origin/${d}" >/dev/null; then
+    printf '%s\n' "$d"; return 0
+  fi
+  for candidate in main master trunk develop; do
+    if resolve_commit "$src" "refs/remotes/origin/${candidate}" >/dev/null; then
+      echo "WARNING: origin/HEAD unusable in ${src}; falling back to origin/${candidate}" >&2
+      printf '%s\n' "$candidate"; return 0
+    fi
+  done
+  return 1
+}
+
+# Path of the worktree that has $2 checked out, or empty when it is free.
+branch_worktree_path() {
+  git -C "$1" worktree list --porcelain 2>/dev/null | awk -v b="refs/heads/$2" '
+    /^worktree /  { path = substr($0, 10) }
+    $0 == "branch " b { print path; exit }
+  '
+}
+
+commit_count() {
+  local n
+  n="$(git -C "$1" rev-list --count "$2" 2>/dev/null || true)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  printf '%s\n' "$n"
+}
+
+# Put the local branch at exactly $3 and set EXPECTED_SHA to the commit the new
+# worktree must end up on. Returns non-zero to mean "do not create this one".
+#
+# This is the fix for the reported bug: herdr honours --base only when it has to
+# create the branch, so the script guarantees the branch position itself.
+EXPECTED_SHA=""
+set_branch_at_base() {
+  local src="$1" branch="$2" base="$3" base_label="$4"
+  local existing in_use unique behind
+  EXPECTED_SHA=""
+  existing="$(resolve_commit "$src" "refs/heads/${branch}" || true)"
+
+  if [[ -z "$existing" ]]; then
+    git -C "$src" branch --no-track "$branch" "$base" \
+      || repo_fail "could not create branch ${branch} at ${base_label} in ${src}" || return 1
+    echo "-> branch: ${branch} created at ${base_label} (${base:0:9})"
+    EXPECTED_SHA="$base"
+    return 0
+  fi
+
+  # An existing branch checked out somewhere else is a hard conflict: herdr
+  # cannot check it out twice, and silently reusing it is what produced stale
+  # worktrees before.
+  in_use="$(branch_worktree_path "$src" "$branch")"
+  if [[ -n "$in_use" ]]; then
+    repo_fail "branch ${branch} is already checked out at ${in_use} - remove that worktree first, or use a different story slug" || return 1
+  fi
+
+  if [[ "$existing" == "$base" ]]; then
+    echo "-> branch: ${branch} already at ${base_label} (${base:0:9})"
+    EXPECTED_SHA="$base"
+    return 0
+  fi
+
+  unique="$(commit_count "$src" "${base}..refs/heads/${branch}")"
+  behind="$(commit_count "$src" "refs/heads/${branch}..${base}")"
+
+  if (( unique == 0 )); then
+    # Leftover branch with nothing of its own — the common case after a story
+    # was removed. Nothing can be lost, so move it to the base.
+    git -C "$src" branch --force --no-track "$branch" "$base" \
+      || repo_fail "could not move existing branch ${branch} to ${base_label} in ${src}" || return 1
+    echo "-> branch: ${branch} was ${behind} commit(s) behind ${base_label} with no commits of its own - moved to ${base:0:9}"
+    EXPECTED_SHA="$base"
+    return 0
+  fi
+
+  if [[ "${WT_RESET_BRANCH:-}" == "1" ]]; then
+    echo "WARNING: WT_RESET_BRANCH=1 - discarding ${unique} commit(s) on ${branch}:" >&2
+    git -C "$src" log --oneline --no-decorate "${base}..refs/heads/${branch}" 2>/dev/null | sed 's/^/     /' || true
+    git -C "$src" branch --force --no-track "$branch" "$base" \
+      || repo_fail "could not reset branch ${branch} to ${base_label} in ${src}" || return 1
+    echo "-> branch: ${branch} reset to ${base_label} (${base:0:9})"
+    EXPECTED_SHA="$base"
+    return 0
+  fi
+
+  if [[ "${WT_REUSE_BRANCH:-}" == "1" ]]; then
+    echo "WARNING: WT_REUSE_BRANCH=1 - keeping existing ${branch} at ${existing:0:9}: ${unique} own commit(s), ${behind} behind ${base_label}. Run 'git merge ${base_label}' in the worktree to catch up." >&2
+    EXPECTED_SHA="$existing"
+    return 0
+  fi
+
+  git -C "$src" log --oneline --no-decorate "${base}..refs/heads/${branch}" 2>/dev/null | sed 's/^/     /' || true
+  repo_fail "$(printf '%s\n' \
+    "branch ${branch} already exists in ${src} at ${existing:0:9} with ${unique} commit(s)" \
+    "  that ${base_label} does not have, and is ${behind} commit(s) behind it. Refusing to create" \
+    "  a worktree that would be out of date or to throw those commits away. Either:" \
+    "    WT_REUSE_BRANCH=1  keep the branch and resume the story on it" \
+    "    WT_RESET_BRANCH=1  discard its ${unique} commit(s) and start from ${base_label}" \
+    "  or delete it yourself:  git -C '${src}' branch -D ${branch}")" || return 1
+}
+
+# `git worktree add` refuses a path that is registered-but-missing (a worktree
+# deleted by hand) or one that already has files in it. Prune the administrative
+# leftovers and clear a directory an earlier failed run left empty.
+init_worktree_path() {
+  local src="$1" path="$2"
+  git -C "$src" worktree prune >/dev/null 2>&1 || true
+  [[ -e "$path" ]] || return 0
+  if [[ -d "$path" ]] && [[ -z "$(ls -A "$path" 2>/dev/null)" ]]; then
+    rmdir "$path" 2>/dev/null || true
+    echo "-> path:   removed empty leftover directory ${path}"
+    return 0
+  fi
+  repo_fail "${path} already exists, is not a worktree, and is not empty - remove it or use a different story slug" || return 1
+}
+
+# The safety net: whatever herdr did, the worktree must sit on $2.
+assert_worktree_at() {
+  local wt="$1" expected="$2" label="$3" head
+  head="$(resolve_commit "$wt" HEAD || true)"
+  if [[ "$head" == "$expected" ]]; then
+    echo "-> verify: HEAD ${expected:0:9} == ${label}"
+    return 0
+  fi
+  echo "WARNING: worktree ${wt} is at '${head}' but should be at ${expected:0:9} (${label}) - repairing" >&2
+  if [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null || true)" ]]; then
+    repo_fail "worktree ${wt} is at the wrong commit and has local changes - fix it by hand" || return 1
+  fi
+  git -C "$wt" reset --hard "$expected" \
+    || repo_fail "could not reset ${wt} to ${expected:0:9} (${label})" || return 1
+  head="$(resolve_commit "$wt" HEAD || true)"
+  if [[ "$head" != "$expected" ]]; then
+    repo_fail "worktree ${wt} still at '${head}' after reset - expected ${expected:0:9}" || return 1
+  fi
+  echo "-> verify: HEAD repaired to ${expected:0:9} == ${label}"
 }
 
 # Point a branch's upstream at its own name on origin. Branching from
@@ -377,48 +497,60 @@ set_push_upstream() {
   echo "-> push:   git push targets origin/${branch}"
 }
 
-# development: new branch from the latest default branch.
-make_worktree_new() {
-  local repo="$1" branch="$2" src="${SRC_ROOT}/${repo}" out ws
+# One worktree, one shared code path.
+#   $3 = default -> base is origin/<default branch>   (development types)
+#   $3 = remote  -> base is origin/<branch>           (review)
+make_worktree() {
+  local repo="$1" branch="$2" base_kind="$3"
+  local src="${SRC_ROOT}/${repo}" path="${STORY_DIR}/${repo}"
+  local out ws base base_label def
   worktree_present "$repo" && return 0
   [[ -d "$src/.git" || -f "$src/.git" ]] || \
     repo_fail "missing clone: $src (set SRC_ROOT or clone the repo there)" || return 1
-  write_repo_notes "$repo"
-  git -C "$src" fetch --prune origin
-  local def; def="$(default_branch "$src")"
-  out="$(herdr worktree create --cwd "$src" --branch "$branch" --base "origin/${def}" \
-      --path "${STORY_DIR}/${repo}" --label "${ID}-${SLUG}" --no-focus)" || out=""
-  ws="$(jq -r '.result.workspace.workspace_id // empty' <<<"$out")"
-  [[ -n "$ws" ]] || {
-    echo "$out" >&2
-    repo_fail "herdr worktree create failed for ${repo}" || return 1
-  }
-  CREATED=$((CREATED + 1))
-  set_push_upstream "${STORY_DIR}/${repo}" "$branch"
-  if [[ "$TYPE" == "development-windows" ]]; then
-    windows_repo_tabs "$ws" "$repo" || true
-  else
-    setup_repo_tabs "$ws" "$repo" || true
-  fi
-}
 
-# review: check out an existing branch at its latest remote state.
-make_worktree_existing() {
-  local repo="$1" branch="$2" src="${SRC_ROOT}/${repo}" out ws
-  worktree_present "$repo" && return 0
-  [[ -d "$src/.git" || -f "$src/.git" ]] || \
-    repo_fail "missing clone: $src (set SRC_ROOT or clone the repo there)" || return 1
+  init_worktree_path "$src" "$path" || return 1
+
+  update_remote "$src" || \
+    repo_fail "git fetch failed for ${repo} - refusing to create a worktree from a possibly stale origin. Check credentials/network and re-run." || return 1
+  sync_origin_head "$src"
+
+  if [[ "$base_kind" == "default" ]]; then
+    def="$(default_branch "$src")" || \
+      repo_fail "cannot determine the default branch of ${src} (no usable origin/HEAD)" || return 1
+    base_label="origin/${def}"
+  else
+    base_label="origin/${branch}"
+  fi
+
+  base="$(resolve_commit "$src" "refs/remotes/${base_label}" || true)"
+  [[ -n "$base" ]] || \
+    repo_fail "${base_label} does not exist in ${src} after fetching - nothing to base ${branch} on" || return 1
+  echo "-> base:   ${base_label} @ ${base:0:9}"
+
+  set_branch_at_base "$src" "$branch" "$base" "$base_label" || return 1
+
   write_repo_notes "$repo"
-  git -C "$src" fetch --prune origin
-  out="$(herdr worktree create --cwd "$src" --branch "$branch" --base "origin/${branch}" \
-      --path "${STORY_DIR}/${repo}" --label "${ID}-${SLUG}" --no-focus)" || out=""
-  ws="$(jq -r '.result.workspace.workspace_id // empty' <<<"$out")"
-  [[ -n "$ws" ]] || {
-    echo "$out" >&2
+
+  # herdr's stderr is kept OUT of the captured stdout: mixing the two corrupts
+  # the JSON, and a create that had actually succeeded then looks like a failure.
+  local errfile; errfile="$(mktemp)"
+  out="$(herdr worktree create --cwd "$src" --branch "$branch" --base "$EXPECTED_SHA" \
+      --path "$path" --label "${ID}-${SLUG}" --no-focus 2>"$errfile")" || out=""
+  ws="$(jq -r '.result.workspace.workspace_id // empty' <<<"$out" 2>/dev/null || true)"
+  if [[ -z "$ws" ]]; then
+    cat "$errfile" >&2 || true
+    [[ -n "$out" ]] && echo "$out" >&2
+    rm -f "$errfile"
     repo_fail "herdr worktree create failed for ${repo}" || return 1
-  }
+  fi
+  rm -f "$errfile"
+
+  assert_worktree_at "$path" "$EXPECTED_SHA" "$base_label" || return 1
+
   CREATED=$((CREATED + 1))
-  set_push_upstream "${STORY_DIR}/${repo}" "$branch"
+  set_push_upstream "$path" "$branch"
+
+  # Tab decoration is cosmetic: never let it fail an otherwise good worktree.
   setup_repo_tabs "$ws" "$repo" || true
 }
 
@@ -437,7 +569,7 @@ BRANCH="${BRANCH_PREFIX}/${ID}-${SLUG}"     # feature/aaron/<id>-<slug> (hyphen)
 TYPE_DIR="${WORKTREE_ROOT}/${SUBFOLDER}"    # .../<subfolder>  (no feature/aaron prefix)
 STORY_DIR="${TYPE_DIR}/${ID}-${SLUG}"       # parent of the repo worktrees
 # Per-repo notes files (<id>-<slug>-<repo>.txt) live inside STORY_DIR and are
-# created per worktree by write_repo_notes(), called from make_worktree_new/existing.
+# created per worktree by write_repo_notes(), called from make_worktree().
 
 mkdir -p "$STORY_DIR"
 echo "-> story:  $STORY_DIR"
@@ -446,7 +578,7 @@ echo "-> branch: $BRANCH"
 # ===========================================================================
 # DEVELOPMENT
 # ===========================================================================
-if [[ "$TYPE" == "development" || "$TYPE" == "development-windows" ]]; then
+if [[ "$TYPE" == "development" ]]; then
   if (( NONINTERACTIVE )); then
     REPOS="${WT_REPOS:-}"
     [[ -n "$REPOS" ]] || { echo "WT_REPOS required in non-interactive mode" >&2; exit 1; }
@@ -462,7 +594,7 @@ if [[ "$TYPE" == "development" || "$TYPE" == "development-windows" ]]; then
   IFS=',' read -ra LIST <<< "$REPOS"
   for repo in "${LIST[@]}"; do
     repo="$(echo "$repo" | xargs)"; [[ -n "$repo" ]] || continue
-    make_worktree_new "$repo" "$BRANCH" || echo "WARNING: skipped ${repo}" >&2
+    make_worktree "$repo" "$BRANCH" default || echo "WARNING: skipped ${repo}" >&2
   done
   echo "OK development ready at ${STORY_DIR}"
 fi
@@ -504,13 +636,31 @@ EOF
   # NOTE: if one repo has several linked branches, give each a distinct --path
   # (e.g. append the branch slug) so they don't collide on ${STORY_DIR}/${repo}.
   # Branches may contain ':' only in exotic names; split on the FIRST colon.
-  while IFS= read -r line; do
+  # `|| [[ -n "$line" ]]` so a file whose LAST line has no trailing newline is
+  # still processed: `read` returns non-zero at EOF, which silently dropped the
+  # only line of a single-PR file (and the run then exited 0 having done nothing).
+  ATTEMPTED=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"                     # tolerate CRLF
+    [[ -n "$line" && "${line:0:1}" != "#" ]] || continue
     repo="${line%%:*}"; branch="${line#*:}"
     repo="$(echo "$repo" | xargs)"; branch="$(echo "$branch" | xargs)"
     [[ -n "$repo" && -n "$branch" ]] || continue
-    make_worktree_existing "$repo" "$branch" || echo "WARNING: skipped ${repo}" >&2
+    ATTEMPTED=$((ATTEMPTED + 1))
+    make_worktree "$repo" "$branch" remote || echo "WARNING: skipped ${repo}" >&2
   done < "$BRANCHES"
+  if (( ATTEMPTED == 0 )); then
+    echo "no usable '<repo>:<branch>' lines in ${BRANCHES}" >&2
+    exit 1
+  fi
   echo "OK review ready at ${STORY_DIR}"
+fi
+
+# Any repo-level failure exits non-zero so automation notices — a partially
+# successful run must never look like a clean one.
+if (( FAILED > 0 )); then
+  echo "-> ${FAILED} repo(s) failed - see the errors above"
+  exit 1
 fi
 
 # Nothing created but something was already there -> "nothing to do" (exit 3),
@@ -519,3 +669,5 @@ if (( CREATED == 0 && SKIPPED > 0 )); then
   echo "-> nothing to do: all requested worktrees already exist"
   exit 3
 fi
+
+exit 0

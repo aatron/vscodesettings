@@ -1,9 +1,0 @@
-# Development worktree launcher (Windows path variant).
-# Installed by install.sh into herdr-plus quick-actions/.
-# Same as New Dev Worktree, but worktrees land under the Windows (/mnt/c) path
-# and get native Windows PowerShell tabs instead of claude/cursor in herdr.
-# Opens a real herdr tab (overlay cannot host interactive gum prompts).
-name = "New Dev Worktree (Windows)"
-description = "Create development worktrees for a story under the Windows (/mnt/c) path"
-type = "command"
-command = '"$HOME/bin/worktree-launch.sh" development-windows {{.WorkspaceId}} "{{.WorkDir}}"'

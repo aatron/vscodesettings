@@ -12,9 +12,6 @@
 # not reliably start on create — which is why the script drives them. The script
 # skips any pane that is already running something, so the commands here are a
 # harmless fallback for re-opening an existing worktree.
-#
-# For development-windows worktrees, make-worktree.sh instead closes the
-# claude/cursor tabs and opens native Windows PowerShell tabs via wt.exe.
 repo = "*"
 
 # Per-repo notes: each worktree opens its own <id>-<slug>-<repo>.txt via the

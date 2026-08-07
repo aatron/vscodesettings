@@ -17,15 +17,12 @@
 # before the rename) under:
 #   <herdr [worktrees].directory>/development/<id>-*/   (development)
 #   <herdr [worktrees].directory>/review/<id>-*/        (review)
-#   <WindowsUserProfile-or-override>/source/worktrees/development/<id>-*/
-#                                                            (development-windows)
 # Per-repo notes files now live inside the story folder; the old location (a
 # sibling of the story folder, under the type dir) is still cleaned up.
 #
-# Nothing machine-specific is hardcoded (Windows user profile is derived at
-# runtime). Primary clones are discovered from each worktree, so SRC_ROOT is
-# not needed here. Destructive — asks for confirmation first (unless
-# WT_ASSUME_YES=1).
+# Nothing machine-specific is hardcoded. Primary clones are discovered from each
+# worktree, so SRC_ROOT is not needed here. Destructive — asks for confirmation
+# first (unless WT_ASSUME_YES=1).
 #
 # Environment hooks (used by az-watcher; all optional):
 #   WT_ID           story id (same as $1) — skips the prompt
@@ -44,10 +41,6 @@
 #   5  nothing removed because every match was dirty (WT_SKIP_DIRTY=1)
 #
 set -euo pipefail
-
-# Optional override; leave empty to auto-derive (keep in sync with
-# worktree-make.sh — only matters if you overrode WINDOWS_WORKTREE_ROOT there).
-WINDOWS_WORKTREE_ROOT=""
 
 # herdr-plus quick actions run with stdin = /dev/null. Prefer the pane PTY from
 # stdout (fd 1); fall back to the controlling tty. Skip when non-interactive.
@@ -98,24 +91,35 @@ resolve_worktree_root() {
   printf '%s\n' "$dir"
 }
 
-# Resolve the development-windows root (mirrors worktree-make.sh; portable).
-resolve_windows_root() {
-  if [[ -n "$WINDOWS_WORKTREE_ROOT" ]]; then
-    printf '%s\n' "$WINDOWS_WORKTREE_ROOT"; return
-  fi
-  local up
-  up="$(powershell.exe -NoProfile -NonInteractive \
-          -Command "[Environment]::GetFolderPath('UserProfile')" 2>/dev/null | tr -d '\r')"
-  [[ -n "$up" ]] || return 1
-  printf '%s/source/worktrees\n' "$(wslpath -u "$up")"
+# Default branch of a clone (never deleted).
+# Refs that must never be deleted as a story branch. Blindly falling back to
+# 'main' was unsafe: in a repo whose default is something else (e.g.
+# trade-central/root) the guard below would not recognise the real default.
+# Delete a directory, tolerating a transient holder: a freshly written checkout
+# is routinely locked for a moment by an indexer, a virus scanner (on /mnt/c), or
+# a pane that is still shutting down. One attempt then reporting "stuck" turns a
+# wait-half-a-second problem into a failed removal. Succeeds when the path is gone.
+remove_dir_retry() {
+  local path="$1" attempt
+  for attempt in 1 2 3 4; do
+    [[ -e "$path" ]] || return 0
+    rm -rf "$path" 2>/dev/null || true
+    [[ -e "$path" ]] || return 0
+    (( attempt < 4 )) && sleep "0.$((25 * attempt))"
+  done
+  [[ -e "$path" ]] && return 1
+  return 0
 }
 
-# Default branch of a clone (never deleted).
-default_branch() {
-  local src="$1" d
+is_protected_branch() {
+  local src="$1" branch="$2" d n
+  case "$branch" in main|master|trunk|develop|HEAD) return 0 ;; esac
   d="$(git -C "$src" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  d="${d#origin/}"
-  echo "${d:-main}"
+  [[ "${d#origin/}" == "$branch" ]] && return 0
+  n="$(git -C "$src" ls-remote --symref origin HEAD 2>/dev/null \
+       | awk '/^ref:/{sub("refs/heads/","",$2); print $2; exit}' || true)"
+  [[ -n "$n" && "$n" == "$branch" ]] && return 0
+  return 1
 }
 
 # --- inputs ----------------------------------------------------------------
@@ -126,9 +130,8 @@ if [[ -z "$ID" ]]; then
 fi
 [[ -n "$ID" ]] || { echo "story id required" >&2; exit 1; }
 
-# Candidate story dirs: every {id}-* (and legacy {id}_*) under the three layouts (dedup).
+# Candidate story dirs: every {id}-* (and legacy {id}_*) under both layouts (dedup).
 HERDR_ROOT="$(resolve_worktree_root)"
-WIN_ROOT="$(resolve_windows_root 2>/dev/null || true)"
 
 declare -a CANDIDATES=()
 add_candidate() {
@@ -148,12 +151,10 @@ add_glob() {
 }
 add_glob "${HERDR_ROOT}/development"
 add_glob "${HERDR_ROOT}/review"
-[[ -n "$WIN_ROOT" ]] && add_glob "${WIN_ROOT}/development"
 
 if (( ${#CANDIDATES[@]} == 0 )); then
   echo "No story folder matching ${ID}-* under:"
   echo "  ${HERDR_ROOT}/development|review"
-  [[ -n "$WIN_ROOT" ]] && echo "  ${WIN_ROOT}/development"
   exit 3
 fi
 
@@ -184,7 +185,10 @@ worktree_dirty() {
 declare -a PLAN=()          # human-readable lines
 declare -a WT_DIRS=() WT_REPO_NAMES=() WT_BRANCHES=() WT_PRIMARIES=() WT_WS=()
 declare -a WT_STORY_DIRS=() WT_SLUGS=()
+declare -a LEFTOVERS=()     # empty non-worktree dirs from a half-finished removal
 DIRTY_SKIPPED=0
+STUCK=0
+REMOVED_COUNT=0
 
 for story_dir in "${CANDIDATES[@]}"; do
   story_name="${story_dir##*/}"
@@ -192,7 +196,21 @@ for story_dir in "${CANDIDATES[@]}"; do
   PLAN+=("story ${story_name}:")
   for wt in "$story_dir"/*/; do
     wt="${wt%/}"
-    [[ -e "$wt/.git" ]] || continue
+    if [[ ! -e "$wt/.git" ]]; then
+      # Not a worktree. An EMPTY directory is the debris a half-finished removal
+      # leaves behind (herdr unregisters the worktree, then cannot delete the
+      # folder because a pane still holds it); collect it so the story can be
+      # finished off. Anything with content in it is left strictly alone.
+      if [[ -d "$wt" ]] && { [[ -z "${WT_REPO:-}" ]] || [[ "${wt##*/}" == "${WT_REPO}" ]]; }; then
+        if [[ -z "$(ls -A "$wt" 2>/dev/null)" ]]; then
+          LEFTOVERS+=("$wt")
+          PLAN+=("  leftover ${wt} (empty, not a worktree - will delete)")
+        else
+          PLAN+=("  keep     ${wt} (not a worktree, and not empty)")
+        fi
+      fi
+      continue
+    fi
     repo="${wt##*/}"
     # Single-repo mode: every other repo in this story is left untouched.
     if [[ -n "${WT_REPO:-}" && "$repo" != "${WT_REPO}" ]]; then
@@ -229,7 +247,7 @@ done
 
 # Nothing this invocation can act on: report "nothing to do" instead of falling
 # through to the folder cleanup, so overlapping cron runs stay silent.
-if (( ${#WT_DIRS[@]} == 0 )); then
+if (( ${#WT_DIRS[@]} == 0 && ${#LEFTOVERS[@]} == 0 )); then
   printf '%s\n' "${PLAN[@]}"
   if (( DIRTY_SKIPPED > 0 )); then
     echo "Nothing removed for story ${ID}: ${DIRTY_SKIPPED} worktree(s) have uncommitted changes."
@@ -254,6 +272,21 @@ else
 fi
 
 # --- execute ---------------------------------------------------------------
+# Empty non-worktree debris first, so the story folder can actually go away.
+for leftover in "${LEFTOVERS[@]:-}"; do
+  [[ -n "$leftover" ]] || continue
+  lws="$(workspace_id_for_path "$leftover" || true)"
+  if [[ -n "$lws" ]]; then
+    herdr workspace close "$lws" >/dev/null 2>&1 || true
+  fi
+  if remove_dir_retry "$leftover"; then
+    echo "-> removed leftover directory ${leftover}"
+  else
+    echo "  warn: could not delete leftover directory ${leftover}" >&2
+    STUCK=$((STUCK + 1))
+  fi
+done
+
 for i in "${!WT_DIRS[@]}"; do
   wt="${WT_DIRS[$i]}"; repo="${WT_REPO_NAMES[$i]}"; branch="${WT_BRANCHES[$i]}"
   primary="${WT_PRIMARIES[$i]}"; ws="${WT_WS[$i]}"
@@ -274,21 +307,34 @@ for i in "${!WT_DIRS[@]}"; do
   if [[ -e "$wt" ]]; then
     if [[ -n "$primary" ]]; then
       git -C "$primary" worktree remove --force "$wt" \
-        || { echo "  warn: git worktree remove failed for ${wt}; forcing rm" >&2; rm -rf "$wt"; }
+        || { echo "  warn: git worktree remove failed for ${wt}; forcing rm" >&2
+             remove_dir_retry "$wt" || true; }
     else
       echo "  warn: no primary clone for ${wt}; removing dir only" >&2
-      rm -rf "$wt"
+      remove_dir_retry "$wt" || true
     fi
+  fi
+  # git may report success yet leave the directory behind if a file was locked.
+  if [[ -e "$wt" ]]; then
+    remove_dir_retry "$wt" || true
+  fi
+
+  # Report honestly if the directory survived all of that, rather than going on
+  # to delete the branch and the notes as though the worktree were gone.
+  if [[ -e "$wt" ]]; then
+    echo "  warn: could not delete ${wt} (something still has it open - a pane, an editor, or a running agent). Close it and re-run; leaving the branch and notes in place." >&2
+    STUCK=$((STUCK + 1))
+    continue
   fi
 
   if [[ -n "$primary" ]]; then
     # Clear any stale worktree registration left after an rm -rf fallback.
     git -C "$primary" worktree prune >/dev/null 2>&1 || true
-    if [[ -n "$branch" && "$branch" != "HEAD" && "$branch" != "$(default_branch "$primary")" ]]; then
+    if [[ -n "$branch" ]] && ! is_protected_branch "$primary" "$branch"; then
       git -C "$primary" branch -D "$branch" \
-        || echo "  warn: could not delete branch ${branch} in ${primary}" >&2
+        || echo "  warn: could not delete branch ${branch} in ${primary} (a future story of the same name will reuse it; worktree-make fast-forwards it)" >&2
     else
-      echo "  skip: not deleting branch '${branch:-<detached>}' (empty/detached/default)"
+      echo "  skip: not deleting branch '${branch:-<detached>}' (empty/detached/protected)"
     fi
   fi
 
@@ -296,6 +342,7 @@ for i in "${!WT_DIRS[@]}"; do
   # folder below anyway, but doing it here is what makes single-repo mode leave
   # the story folder correct for the repos that are still there.
   rm -f "${story_dir}/${ID}-${slug}-${repo}.txt" "${story_dir}/.notespath-${repo}"
+  REMOVED_COUNT=$((REMOVED_COUNT + 1))
 done
 
 # True when any repo worktree is still checked out inside a story folder.
@@ -327,8 +374,19 @@ for story_dir in "${CANDIDATES[@]}"; do
   fi
 done
 
+LEFT_NOTE=""
+(( ${#LEFTOVERS[@]} > 0 )) && LEFT_NOTE=" (plus ${#LEFTOVERS[@]} empty leftover dir(s))"
 if (( DIRTY_SKIPPED > 0 )); then
-  echo "OK removed ${#WT_DIRS[@]} worktree(s) for story ${ID}; kept ${DIRTY_SKIPPED} with uncommitted changes."
+  echo "OK removed ${REMOVED_COUNT} worktree(s) for story ${ID}${LEFT_NOTE}; kept ${DIRTY_SKIPPED} with uncommitted changes."
 else
-  echo "OK removed ${#WT_DIRS[@]} worktree(s) for story ${ID}${WT_REPO:+ (repo ${WT_REPO})}."
+  echo "OK removed ${REMOVED_COUNT} worktree(s) for story ${ID}${WT_REPO:+ (repo ${WT_REPO})}${LEFT_NOTE}."
 fi
+
+# A worktree that could not be deleted must not report success: the story is
+# still half there, and a later worktree-make would trip over it.
+if (( STUCK > 0 )); then
+  echo "-> ${STUCK} worktree(s) could not be deleted - see the warnings above"
+  exit 1
+fi
+
+exit 0

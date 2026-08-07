@@ -5,7 +5,7 @@
 # target script into that pane via `herdr pane run`.
 #
 # Usage:
-#   worktree-launch.ps1 <development|development-windows|review> [ws] [cwd]       -> make-worktree.ps1 <type>
+#   worktree-launch.ps1 <development|review> [ws] [cwd]                           -> make-worktree.ps1 <type>
 #   worktree-launch.ps1 remove [ws] [cwd] [story-id]                              -> worktree-remove.ps1
 #   worktree-launch.ps1 az-sync [ws] [cwd]                                        -> az-watcher run
 #
@@ -24,11 +24,6 @@ switch ($Action) {
     $RunArgs = $Action
     $Label = 'New Dev Worktree'
   }
-  'development-windows' {
-    $Script = Join-Path $BinDir 'make-worktree.ps1'
-    $RunArgs = $Action
-    $Label = 'New Dev Worktree (Windows)'
-  }
   'review' {
     $Script = Join-Path $BinDir 'make-worktree.ps1'
     $RunArgs = $Action
@@ -45,7 +40,7 @@ switch ($Action) {
     $Label = 'Sync Azure Reviews'
   }
   default {
-    Write-Error "usage: worktree-launch.ps1 <development|development-windows|review|remove|az-sync> [workspace_id] [cwd] [story-id]"
+    Write-Error "usage: worktree-launch.ps1 <development|review|remove|az-sync> [workspace_id] [cwd] [story-id]"
     exit 1
   }
 }
@@ -86,3 +81,8 @@ $cmd = if ($RunArgs) {
 }
 
 & herdr pane run $pane $cmd
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "herdr pane run failed for pane $pane"
+  exit 1
+}
+exit 0

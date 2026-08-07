@@ -128,13 +128,10 @@ Wildcard layout (`repo = "*"`) opens notes / claude / cursor / pwsh. On create,
 | cursor | `{repo} cursor` | `agent --auto-review` |
 | pwsh | `{repo} pwsh` | bare PowerShell |
 
-**`development-windows`:** closes claude/cursor; keeps notes + `{repo} pwsh`
-(native-Windows analogue of the WSL path that opened `wt.exe` tabs).
-
 ## Daily use
 
-* **prefix+down** → **New Dev Worktree** / **New Dev Worktree (Windows)** /
-  **New Review Worktree** / **Delete Story Worktree** / **Sync Azure Reviews**
+* **prefix+down** → **New Dev Worktree** / **New Review Worktree** /
+  **Delete Story Worktree** / **Sync Azure Reviews**
 * Quick actions invoke PowerShell via herdr-plus's Windows runner
   (`powershell -NoProfile -NonInteractive -Command`). Commands must be
   PowerShell syntax using `{{.Home}}\bin\...` - **not** cmd `%USERPROFILE%` and
@@ -177,5 +174,51 @@ $env:WT_ID='99999'; $env:WT_SLUG='dry-run'; $env:WT_REPOS='repo-a,repo-b'
 & "$env:USERPROFILE\bin\make-worktree.ps1" development
 ```
 
-Cleanup: `git worktree remove` from each primary clone, then delete the story
-folder under `[worktrees].directory`.
+Cleanup: `worktree-remove.ps1 <id>` (or `git worktree remove` from each primary
+clone, then delete the story folder under `[worktrees].directory`).
+
+### Always creating from the latest default branch
+
+`worktree-make.ps1` guarantees a new worktree sits on the tip of
+`origin/<default branch>`, and prints a `-> verify: HEAD <sha> == origin/<branch>`
+line proving it. It gets there by owning the branch itself rather than trusting
+`herdr worktree create --base`, which silently ignores `--base` whenever the
+local branch already exists and just checks it out wherever it happens to point.
+
+What it does per repo:
+
+1. `git fetch --prune origin`, **exit status checked**, one retry. A failed fetch
+   aborts that repo instead of falling back to a stale `origin/<default>`.
+2. `git remote set-head origin --auto` — plain `git fetch` never updates
+   `refs/remotes/origin/HEAD`, so a clone made before the remote's default branch
+   was renamed would otherwise keep branching from the wrong one.
+3. Resolves the base to an explicit commit sha.
+4. Puts the local branch at exactly that sha.
+5. Verifies the new worktree's `HEAD`, repairing a clean worktree once with
+   `git reset --hard` before failing.
+
+If a branch of that name already exists **and holds commits the base does not**,
+the script refuses rather than hand back old code or throw work away. It lists
+those commits and offers:
+
+| variable | effect |
+| --- | --- |
+| `WT_REUSE_BRANCH=1` | keep the existing branch (resume the story); reports how far behind the base it is |
+| `WT_RESET_BRANCH=1` | discard its unique commits and start from the base |
+
+A leftover branch with **no** commits of its own is simply moved to the base
+(nothing can be lost) and the move is logged.
+
+Exit codes: `0` created and verified · `1` bad input or at least one repo failed
+· `3` nothing to do (every worktree already existed).
+
+### Tests
+
+```powershell
+powershell -File win\herdr\tests\test-worktree-make.ps1     # needs herdr running
+powershell -File win\herdr\tests\test-worktree-remove.ps1   # no herdr needed
+```
+
+Both build throwaway repos under `tests\.tmp` and assert on real behaviour
+(stale origin refs, leftover branches, fetch failure, protected default
+branches, dirty-worktree keeps). They never touch your real repos or worktrees.

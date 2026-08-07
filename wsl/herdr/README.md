@@ -26,7 +26,6 @@ cd /path/to/vscodesettings/wsl/herdr
 5. Symlink `worktree-make.sh` → `~/bin/make-worktree.sh` and `worktree-launch.sh` → `~/bin/worktree-launch.sh`
 6. Copy quick actions into herdr-plus `quick-actions/`:
    * `new-worktree-dev.toml` → **New Dev Worktree** (opens a tab, then runs the script)
-   * `new-worktree-dev-windows.toml` → **New Dev Worktree (Windows)** (worktrees under the Windows `/mnt/c` path)
    * `new-worktree-review.toml` → **New Review Worktree**
    * `remove-worktree.toml` → **Delete Story Worktree** (form: story id → removes matching `{id}-*` worktrees, branches, and notes)
 7. Copy `worktree-layout.toml` into herdr-plus `worktrees/` (wildcard layout for every repo)
@@ -35,10 +34,8 @@ Then edit machine-local values at the top of `worktree-make.sh`:
 
 * `SRC_ROOT` — primary clones (`$HOME/source/repos/<repo>`)
 * `BRANCH_PREFIX` — e.g. `feature/aaron`
-* `WINDOWS_WORKTREE_ROOT` — **optional**; `development-windows` root. Leave empty to auto-derive `<WindowsUserProfile>/source/worktrees` (the Windows user profile is detected at runtime, so this is **portable across machines** — no username is hardcoded). Set only to override.
-* `WIN_POWERSHELL` — **optional**; the shell for the `development-windows` Windows tabs. Leave empty to auto-pick `pwsh.exe` (PowerShell 7) if present, else `powershell.exe`.
 
-Story worktrees use Herdr’s `[worktrees].directory` from `config.toml` (see below), except `development-windows`, which uses `WINDOWS_WORKTREE_ROOT`. Do not set a separate `WORKTREE_ROOT` in the script.
+Story worktrees use Herdr’s `[worktrees].directory` from `config.toml` (see below). Do not set a separate `WORKTREE_ROOT` in the script.
 
 ## Herdr settings (manual `config.toml`)
 
@@ -318,16 +315,13 @@ Both agents start in their **auto** permission mode — Claude's `auto` mode, an
 
 A pane that is already running something (i.e. the layout's own command did fire) is left alone, so nothing gets launched twice. Re-opening an existing worktree does not re-run the script, so those tabs keep the layout names `notes` / `claude` / `cursor` / `bash` and whatever the layout itself manages to start.
 
-**`development-windows` exception:** for that type the script instead **closes** the claude and cursor tabs (leaving `notes-{id}-{slug}` + `{repo-name} bash` in herdr) and opens a **native Windows PowerShell** tab per repo in Windows Terminal — titled `{id}-{slug}-{repo}`, started in the repo's `C:\...` path — where you run Claude/Cursor on the Windows side. Requires Windows Terminal (`wt.exe`) and native-Windows tooling; the WSL copies of claude/cursor are not used there.
-
 ## Daily use
 
 * **Navigate** between story worktrees from the left sidebar (grouped by repo; each worktree row is labeled `{id}-{slug}`), or with `previous_workspace` / `next_workspace`
-* **prefix+down** → **New Dev Worktree**, **New Dev Worktree (Windows)**, or **New Review Worktree**
+* **prefix+down** → **New Dev Worktree** or **New Review Worktree**
 * That opens a new tab and runs `make-worktree.sh` there (herdr-plus overlays cannot host interactive `gum` prompts)
 * Dev prompts: story id, slug, comma-separated repo names
 * **Commit & push**: from any worktree, a plain `git commit` + `git push` just works — the script points each branch's upstream at its **own name** on origin, so the first `git push` creates `origin/feature/aaron/{id}-{slug}` and can never target the default branch (even with `push.default=upstream`). Without this, git would auto-track `origin/main` (the branch's base) and a plain push would fail — or worse, aim at main.
-* **New Dev Worktree (Windows)**: same prompts as Dev, but worktrees are created under `WINDOWS_WORKTREE_ROOT` (`<WindowsUserProfile>/source/worktrees/development/…`); herdr shows only `notes` + `{repo} bash`, and a native Windows PowerShell tab `{id}-{slug}-{repo}` opens per repo. Prereqs: Windows Terminal + Claude/Cursor installed natively on Windows.
 * Review prompts for id + slug and then uses a placeholder branch list — for real branches, let **az-watcher** create review worktrees from your Azure assignments instead (see below)
 * **prefix+down** → **Delete Story Worktree** to tear a story down (enter story id only; see below)
 * **prefix+down** → **Sync Azure Reviews** to run az-watcher once in a visible tab
@@ -335,7 +329,7 @@ A pane that is already running something (i.e. the layout's own command did fire
 
 ## Delete a story
 
-**prefix+down** → **Delete Story Worktree** asks for the story `id` only (herdr-plus form), then opens a tab and runs `worktree-remove.sh`. The script globs every `{id}-*` folder (plus legacy `{id}_*` folders from before the rename) under all three layouts a story can live in — `<[worktrees].directory>/development`, `<[worktrees].directory>/review`, and `<WindowsUserProfile>/source/worktrees/development` — and, after a `gum` confirmation, for each matching story:
+**prefix+down** → **Delete Story Worktree** asks for the story `id` only (herdr-plus form), then opens a tab and runs `worktree-remove.sh`. The script globs every `{id}-*` folder (plus legacy `{id}_*` folders from before the rename) under both layouts a story can live in — `<[worktrees].directory>/development` and `<[worktrees].directory>/review` — and, after a `gum` confirmation, for each matching story:
 
 * removes each repo worktree through herdr (`herdr worktree remove --force`) — this closes the workspace, deletes the checkout, **and unregisters the worktree from herdr's sidebar** (a plain `workspace close` leaves it listed),
 * falls back to `git worktree remove --force` (then `rm -rf`) when herdr is not running or the directory survives, and prunes stale worktree registrations in the primary clone,
@@ -386,13 +380,4 @@ Goal: confirm notes + three worktrees are created under `[worktrees].directory` 
    * Worktrees: `repo-a/`, `repo-b/`, `repo-c/` on branch `feature/aaron/99999-dry-run`
    * Each worktree workspace opens with tabs `notes-99999-dry-run` (micro on that repo's notes file), `{repo} claude` (running `claude`), `{repo} cursor` (running `agent`), and `{repo} bash` — all at the worktree root
 
-### Dry run — `development-windows`
-
-Same as above but **prefix+down** → **New Dev Worktree (Windows)**. Expect (root auto-derived; no `WINDOWS_WORKTREE_ROOT` needed):
-
-* Notes + story dir under `<WindowsUserProfile>/source/worktrees/development/99999-dry-run/` (i.e. a `/mnt/c/Users/<you>/…` path)
-* Worktrees `repo-a/`, `repo-b/`, `repo-c/` on branch `feature/aaron/99999-dry-run`
-* Each herdr workspace opens with **only** `notes-99999-dry-run` + `{repo} bash`
-* One **native Windows PowerShell** tab per repo in Windows Terminal, titled `99999-dry-run-repo-a` (etc.), started in the repo's `C:\Users\<you>\…` path
-
-Cleanup after the dry run (from each primary clone): `git worktree list` then `git worktree remove <path>` as needed, and delete the story folder/notes under `[worktrees].directory` (and under `WINDOWS_WORKTREE_ROOT` for the Windows variant).
+Cleanup after the dry run (from each primary clone): `git worktree list` then `git worktree remove <path>` as needed, and delete the story folder/notes under `[worktrees].directory`.

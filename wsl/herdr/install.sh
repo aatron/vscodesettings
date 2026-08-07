@@ -12,7 +12,7 @@
 #      worktree-launch.sh -> ~/bin/worktree-launch.sh,
 #      worktree-remove.sh -> ~/bin/worktree-remove.sh, and
 #      az-watcher/az-watcher.sh -> ~/bin/az-watche
-#   6. Installs quick-action TOMLs (dev + dev-windows + review + delete + az-sync)
+#   6. Installs quick-action TOMLs (dev + review + delete + az-sync)
 #      into herdr-plus
 #   7. Installs the wildcard worktree auto-layout (repo = "*")
 #
@@ -310,10 +310,16 @@ ln -sfn "${SCRIPT_DIR}/az-watcher/az-watcher.sh" "$TARGET_AZ_WATCHER"
 echo "-> az:      ${TARGET_AZ_WATCHER} -> ${SCRIPT_DIR}/az-watcher/az-watcher.sh"
 
 install_file "${SCRIPT_DIR}/new-worktree-dev.toml"         "${QA_DIR}/new-worktree-dev.toml"
-install_file "${SCRIPT_DIR}/new-worktree-dev-windows.toml" "${QA_DIR}/new-worktree-dev-windows.toml"
 install_file "${SCRIPT_DIR}/new-worktree-review.toml"      "${QA_DIR}/new-worktree-review.toml"
 install_file "${SCRIPT_DIR}/remove-worktree.toml"          "${QA_DIR}/remove-worktree.toml"
 install_file "${SCRIPT_DIR}/az-watcher.toml"              "${QA_DIR}/az-watcher.toml"
+
+# Retired quick action. herdr-plus lists whatever TOMLs are in quick-actions/,
+# so a copy left by an earlier install keeps showing in prefix+down forever.
+if [[ -e "${QA_DIR}/new-worktree-dev-windows.toml" ]]; then
+  rm -f "${QA_DIR}/new-worktree-dev-windows.toml"
+  echo "-> removed:   ${QA_DIR}/new-worktree-dev-windows.toml (retired quick action)"
+fi
 install_file "${SCRIPT_DIR}/worktree-layout.toml"          "${LAYOUT_DIR}/worktree-layout.toml"
 
 # Seeded herdr-plus examples use macOS `open`; rewrite to {{opener}} on Linux/WSL.
