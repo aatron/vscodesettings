@@ -25,6 +25,25 @@ function GitLine([string]$Repo, [string[]]$A) {
   return ''
 }
 
+# The fixture herdr config. -WithTreeToken lays the sidebar rows out so the
+# $tree connector renders, which is what makes worktree-make label the repo rows
+# with their bare name instead of a plain indent.
+function Write-FixtureConfig([switch]$WithTreeToken) {
+  # TOML basic string, backslashes escaped exactly as the README tells the user
+  # to write them: directory = "C:\\Users\\me\\source\\worktrees"
+  $lines = @(
+    '[worktrees]'
+    ('directory = "' + $script:Trees.Replace('\', '\\') + '"')
+  )
+  if ($WithTreeToken) {
+    $lines += @(
+      '[ui.sidebar.spaces]'
+      'rows = [["$tree", "state_icon", "workspace"]]'
+    )
+  }
+  Set-Content -LiteralPath $script:Cfg -Encoding utf8 -Value $lines
+}
+
 function Reset-Fixture {
   # Close the workspaces this harness created, then move to a brand-new
   # directory: herdr panes keep handles open on old worktrees, so reusing one
@@ -39,12 +58,7 @@ function Reset-Fixture {
   $Root = $script:Root; $Script = $script:Script
   $Repos = $script:Repos; $Trees = $script:Trees; $Cfg = $script:Cfg
   New-Item -ItemType Directory -Force -Path $Root, $Repos, $Trees | Out-Null
-  # TOML basic string, backslashes escaped exactly as the README tells the user
-  # to write them: directory = "C:\\Users\\me\\source\\worktrees"
-  Set-Content -LiteralPath $Cfg -Encoding utf8 -Value @(
-    '[worktrees]'
-    ('directory = "' + $Trees.Replace('\', '\\') + '"')
-  )
+  Write-FixtureConfig
   # A copy of the real script with SRC_ROOT repointed at the fixture.
   $lines = Get-Content -LiteralPath $RealScript
   $out = foreach ($l in $lines) {
@@ -501,6 +515,56 @@ Check 'ccc has its own row' ($ccc.Count -eq 1) "count=$($ccc.Count)"
 if ($ccc.Count -eq 1) {
   Check 'ccc row has three tabs' ((@(Get-TabLabels $ccc[0].workspace_id)).Count -eq 3) 'wrong tab count'
 }
+Check 'prints the config hint when $tree is not configured' `
+  ($res.Out -match '\[ui\.sidebar\.spaces\]') "no hint`n$($res.Out)"
+
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '18. $tree token: connectors reported, labels un-indented, last repo gets the corner'
+Reset-Fixture
+Write-FixtureConfig -WithTreeToken
+$a = New-Repo 'aaa' 'main' 1
+$b = New-Repo 'bbb' 'main' 1
+$res = Invoke-Make 'development' @{ WT_ID = '99018'; WT_SLUG = 'zz-tree'; WT_REPOS = 'aaa,bbb' }
+$storyDir = Split-Path -Parent (Story '99018' 'zz-tree' 'aaa')
+$BRANCH_CH = -join @([char]0x251C, [char]0x2500)
+$LAST_CH = -join @([char]0x2514, [char]0x2500)
+Check 'exit 0' ($res.Code -eq 0) "exit=$($res.Code)`n$($res.Out)"
+Check 'no config hint (it is configured)' `
+  (-not ($res.Out -match '\[ui\.sidebar\.spaces\]')) "hint printed anyway`n$($res.Out)"
+
+$story = @(Get-FixtureWorkspaces $storyDir -Exact)
+Check 'story row exists' ($story.Count -eq 1) "count=$($story.Count)"
+if ($story.Count -eq 1) {
+  # The trunk carries no connector; an absent token renders as nothing.
+  Check 'story row has no tree token' `
+    ($null -eq $story[0].tokens -or -not $story[0].tokens.tree) "tokens=$($story[0].tokens | ConvertTo-Json -Compress)"
+}
+
+$rowA = @(Get-FixtureWorkspaces (Story '99018' 'zz-tree' 'aaa') -Exact)
+$rowB = @(Get-FixtureWorkspaces (Story '99018' 'zz-tree' 'bbb') -Exact)
+Check 'both repo rows exist' (($rowA.Count -eq 1) -and ($rowB.Count -eq 1)) "a=$($rowA.Count) b=$($rowB.Count)"
+if (($rowA.Count -eq 1) -and ($rowB.Count -eq 1)) {
+  Check 'labels are the bare repo name (no label indent)' `
+    (("$($rowA[0].label)" -eq 'aaa') -and ("$($rowB[0].label)" -eq 'bbb')) `
+    "a=[$($rowA[0].label)] b=[$($rowB[0].label)]"
+  Check 'first repo gets the tee connector' `
+    ("$($rowA[0].tokens.tree)" -eq $BRANCH_CH) "got=[$($rowA[0].tokens.tree)]"
+  Check 'last repo gets the corner connector' `
+    ("$($rowB[0].tokens.tree)" -eq $LAST_CH) "got=[$($rowB[0].tokens.tree)]"
+}
+
+Write-Host ''
+Write-Host '18b. adding a repo moves the corner down to the new last one'
+$c = New-Repo 'ccc' 'main' 1
+$res = Invoke-Make 'development' @{ WT_ID = '99018'; WT_SLUG = 'zz-tree'; WT_REPOS = 'aaa,bbb,ccc' }
+$rowB = @(Get-FixtureWorkspaces (Story '99018' 'zz-tree' 'bbb') -Exact)
+$rowC = @(Get-FixtureWorkspaces (Story '99018' 'zz-tree' 'ccc') -Exact)
+Check 'exit 0' ($res.Code -eq 0) "exit=$($res.Code)`n$($res.Out)"
+Check 'bbb gave up the corner' `
+  (($rowB.Count -eq 1) -and ("$($rowB[0].tokens.tree)" -eq $BRANCH_CH)) "got=[$($rowB[0].tokens.tree)]"
+Check 'ccc took it' `
+  (($rowC.Count -eq 1) -and ("$($rowC[0].tokens.tree)" -eq $LAST_CH)) "got=[$($rowC[0].tokens.tree)]"
 
 # ---------------------------------------------------------------------------
 # Cleanup order matters, and one pass is not enough. herdr keeps a workspace for

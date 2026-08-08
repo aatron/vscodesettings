@@ -344,6 +344,9 @@ Write-Host "       $(Join-Path $ScriptDir 'worktree-make.ps1')"
 Write-Host '     (SRC_ROOT, BRANCH_PREFIX)'
 Write-Host '  2. Merge README Herdr settings into config.toml by hand, including:'
 Write-Host '       [worktrees] directory = "C:\\Users\\<you>\\source\\worktrees"'
+Write-Host '       [ui.sidebar.spaces] rows = [["$tree", "state_icon", "workspace"]]'
+Write-Host '         ($tree must precede state_icon - it is the connector drawn under a'
+Write-Host '          story row for each of its repos; without it the bullets stay left)'
 Write-Host "       $cfgPath"
 Write-Host '  3. Seed Agent Usage (prints snippets; does not rewrite herdr config.toml):'
 Write-Host '       herdr plugin action invoke usagebar.setup'

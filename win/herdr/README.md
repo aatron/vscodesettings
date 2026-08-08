@@ -58,6 +58,34 @@ micro $env:APPDATA\herdr\config.toml
 directory = "C:\\Users\\<you>\\source\\worktrees"
 ```
 
+### Sidebar rows (required for the story tree)
+
+The one setting the worktree workflow genuinely depends on. `$tree` **must come
+before `state_icon`**, or the repo rows under a story get no connector and their
+bullets stay hard against the left edge:
+
+```toml
+[ui.sidebar.spaces]
+# $tree is reported per workspace by worktree-make.ps1: the connector drawn for
+# a story's repo rows. It must come BEFORE state_icon, or the bullet stays hard
+# against the left edge and only the label indents.
+rows = [["$tree", "state_icon", "workspace"]]
+```
+
+Apply with:
+
+```powershell
+herdr config check          # expect: config: ok
+herdr server reload-config  # expect: "status":"applied"
+```
+
+Rows already created keep whatever they had — re-run `make-worktree.ps1` for a
+story to have it report the tokens. Full rationale in
+[Drawing the connectors](#drawing-the-connectors).
+
+> Avoid adding a `branch` / `git_status` second row here: a story row spans
+> several repos, so it has no single branch to show.
+
 ### Herdr Plus keybinds (Windows)
 
 On Windows, herdr-plus exposes **platform-specific** action ids. The Linux/macOS
@@ -152,16 +180,20 @@ to take the *source repo* from — it still creates a workspace of its own.
 
 So `worktree-make.ps1` adds the worktrees with plain `git worktree add` and builds
 the rows itself. A workspace with no worktree metadata is not grouped at all, so
-the sidebar now reads task-first, matching the folders — a story row with one
-indented row per repo under it:
+the sidebar now reads task-first, matching the folders — a story row with one row
+per repo drawn beneath it:
 
 ```
-{id}-{slug}                 cwd = the story folder
-  repo1                     cwd = {id}-{slug}\repo1
-  repo2                     cwd = {id}-{slug}\repo2
-{other-id}-{other-slug}
-  repo1
+● {id}-{slug}               cwd = the story folder
+├─ ● repo1                  cwd = {id}-{slug}\repo1
+└─ ● repo2                  cwd = {id}-{slug}\repo2
+● {other-id}-{other-slug}
+└─ ● repo1
 ```
+
+**The connectors need one line in `config.toml`** — see
+[Drawing the connectors](#drawing-the-connectors) below. Without it you still get
+the rows, just with the bullets hard against the left edge.
 
 ### Tabs
 
@@ -189,18 +221,52 @@ row it already has, creates only the tabs that are missing, and starts commands
 **only in tabs it just created** — a tab you are already working in is never typed
 into.
 
-### The nesting is cosmetic
+### Drawing the connectors
 
-herdr has no parent/child workspaces. Its sidebar is a flat list of spaces, and
-the only automatic grouping is the repo grouping described above. So:
+A sidebar row is built from the token list in `[ui.sidebar.spaces].rows`, and the
+default puts `state_icon` first — so **every bullet sits hard against the left
+edge**, and indenting a workspace's *label* only shifts the text after it:
 
-* **The indent is part of the repo row's label** (`'  ' + repo`, set by
-  `$CHILD_LABEL_PREFIX` at the top of `worktree-make.ps1`). Keep it ASCII — a
-  box-drawing character renders as mojibake on a non-UTF-8 code page.
+```
+● {id}-{slug}
+●   repo1                   <- label indented, bullet is not
+```
+
+The fix is to render something *before* the icon. herdr supports custom
+per-workspace tokens (`$name`, the same mechanism as the documented
+`$jj_status`), so `worktree-make.ps1` reports a `tree` token — `├─` on each repo
+row, `└─` on the last, nothing on the story row (an absent token renders as
+nothing). Putting `$tree` first in the row spec then indents the bullet itself:
+
+```toml
+[ui.sidebar.spaces]
+rows = [["$tree", "state_icon", "workspace"]]
+```
+
+`install.ps1` never rewrites the root `config.toml`, so this is a manual edit —
+see [Sidebar rows](#sidebar-rows-required-for-the-story-tree) for the exact block
+and how to apply it. `worktree-make.ps1` reads `config.toml`, notices when the
+token is not configured, keeps using the old label indent, and prints the snippet
+so you are never left in a silent half-state.
+
+Connectors are re-reported on every run, so the repo that used to be last gives
+up its corner when you add another one. They are set from char codes in the
+script (`$TREE_BRANCH` / `$TREE_LAST`) rather than typed literally, because
+Windows PowerShell 5.1 reads a `.ps1` as ANSI unless it has a BOM. Swap them for
+`|-` and `` `- `` if your terminal font has no box-drawing glyphs.
+
+### The nesting is still cosmetic
+
+herdr has no parent/child workspaces — its sidebar is a flat list of spaces, and
+the only automatic grouping is the repo grouping described above. The connectors
+draw the relationship; they do not create one. In particular:
+
 * **Adjacency comes from creation order**, which is what the sidebar sorts by.
   The repo rows are created back to back with their story row, so they sit
   together. A repo added to an existing story lands at the **bottom** of the
   sidebar rather than under its story until herdr is restarted.
+* Nothing stops you closing a story row and leaving its repo rows behind; they
+  are independent spaces. `worktree-remove.ps1` closes all of them together.
 
 If you would rather not rely on that, the alternative is one tab per repo inside
 the single story workspace (`repo1 claude`, `repo2 claude`, …) — real containment,
@@ -218,12 +284,8 @@ Story and repo workspaces are not registered with herdr as worktrees, so:
   still installed and still correct for worktrees opened through herdr's own UI.
 * `branch` / `git_status` sidebar tokens are blank on a story row — there is no
   single branch for a four-repo story. (They would work on a repo row, but the
-  same layout applies to every space.) Keep the one-row layout:
-
-  ```toml
-  [ui.sidebar.spaces]
-  rows = [["state_icon", "workspace"]]
-  ```
+  same layout applies to every space.) Keep the one-row layout — see
+  [Drawing the connectors](#drawing-the-connectors) for the exact `rows` value.
 
 The checkouts themselves are ordinary git worktrees, unchanged.
 

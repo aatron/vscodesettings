@@ -15,10 +15,12 @@
 #   take the SOURCE REPO from - it still creates a workspace of its own.
 #   So this script adds the worktrees with plain `git worktree add` and builds
 #   the rows itself. A workspace with no worktree metadata is not grouped at all,
-#   so the sidebar reads story-first, one indented row per repo:
+#   so the sidebar reads story-first, one row per repo drawn beneath it:
 #       {id}-{slug}          cwd = the story folder
-#         repo1              cwd = {id}-{slug}/repo1
-#         repo2              cwd = {id}-{slug}/repo2
+#       |- repo1             cwd = {id}-{slug}/repo1
+#       `- repo2             cwd = {id}-{slug}/repo2
+#   The connectors need one line in config.toml - see Initialize-StoryWorkspace,
+#   which prints it when it is missing.
 #
 #   The story row carries four tabs at the story root, where one agent sees every
 #   repo in the story at once:
@@ -97,10 +99,23 @@ $STORY_TABS = @('notes', 'claude', 'cursor', 'pwsh')
 # The tabs of each repo's own workspace, opened at that repo's worktree root.
 $REPO_TABS = @('notes', 'claude', 'pwsh')
 
-# Repo rows are indented under their story row in the sidebar. herdr has no real
-# parent/child nesting (see Initialize-StoryWorkspace), so the indent is part of
-# the label - keep it ASCII, a box-drawing character renders as mojibake in a
-# console that is not on a UTF-8 code page.
+# Tree connectors drawn to the left of a repo row's state icon. They are
+# reported as the workspace's $tree sidebar token, which only renders if
+# config.toml asks for it (see Test-TreeTokenConfigured):
+#
+#   [ui.sidebar.spaces]
+#   rows = [["$tree", "state_icon", "workspace"]]
+#
+# Built from char codes rather than typed literally: Windows PowerShell 5.1
+# reads a .ps1 as ANSI unless it has a BOM, which would mangle them on the way
+# in. herdr itself stores and renders them as UTF-8 correctly.
+$TREE_BRANCH = -join @([char]0x251C, [char]0x2500)   # |- for all but the last repo
+$TREE_LAST = -join @([char]0x2514, [char]0x2500)     # `- for the last one
+# Swap both for '|-' and '`-' if your terminal font has no box-drawing glyphs.
+
+# Fallback indent, used only when config.toml does NOT render the $tree token.
+# It goes in the label, so it shifts the text but not the bullet - which is
+# exactly the limitation $tree exists to fix.
 $CHILD_LABEL_PREFIX = '  '
 
 # ===========================================================================
@@ -310,6 +325,47 @@ function ConvertTo-PsLiteral([string]$Value) {
   return "'" + ($Value -replace "'", "''") + "'"
 }
 
+function Get-HerdrConfigPath {
+  if ($env:HERDR_CONFIG_PATH) { return $env:HERDR_CONFIG_PATH }
+  return (Join-Path $env:APPDATA 'herdr\config.toml')
+}
+
+# Does the sidebar actually draw the $tree token?
+#
+# It is opt-in: herdr renders a space row from [ui.sidebar.spaces].rows, whose
+# default is [["state_icon", "workspace"]] - state_icon first, so every bullet
+# sits hard against the left edge no matter what the label says. Only a row spec
+# that puts $tree BEFORE state_icon can indent the bullet itself.
+#
+# install.ps1 never rewrites config.toml, so the script has to cope with both:
+# with $tree the repo label is the bare repo name and the connector supplies the
+# indent; without it the label carries a plain indent instead.
+function Test-TreeTokenConfigured {
+  $cfg = Get-HerdrConfigPath
+  if (-not (Test-Path -LiteralPath $cfg)) { return $false }
+  $inSection = $false
+  foreach ($line in (Get-Content -LiteralPath $cfg -ErrorAction SilentlyContinue)) {
+    if ($line -match '^\s*\[ui\.sidebar\.spaces\]') { $inSection = $true; continue }
+    if ($line -match '^\s*\[') { $inSection = $false; continue }
+    if (-not $inSection) { continue }
+    # A commented-out sample line must not count as configured.
+    if ($line -match '^\s*#') { continue }
+    if ($line -match '\$tree') { return $true }
+  }
+  return $false
+}
+
+# Display-only sidebar token. Never fatal: a herdr that does not take it just
+# leaves the row looking the way it does today.
+function Set-TreeToken([string]$Ws, [string]$Value) {
+  if (-not $Ws) { return }
+  if ($Value) {
+    Invoke-HerdrQuiet @('workspace', 'report-metadata', $Ws, '--source', 'worktree-make', '--token', "tree=$Value")
+  } else {
+    Invoke-HerdrQuiet @('workspace', 'report-metadata', $Ws, '--source', 'worktree-make', '--clear-token', 'tree')
+  }
+}
+
 # The workspace sitting at $Dir under $Label, or '' when there is none.
 #
 # Both halves are required. Path alone is not enough now that a story has child
@@ -444,18 +500,25 @@ function Initialize-Workspace([string]$Dir, [string]$Label, [string[]]$TabNames,
   return $ws
 }
 
-# The story row, then one indented row per repo directly beneath it.
+# The story row, then one row per repo drawn beneath it as its children.
 #
 #     {id}-{slug}          story workspace, cwd = story folder
-#       repo1              repo workspace,  cwd = story/repo1
-#       repo2
+#     |- repo1             repo workspace,  cwd = story/repo1
+#     `- repo2
 #
 # herdr has NO parent/child nesting: its sidebar is a flat list of spaces (only
 # worktree workspaces get grouped, and then always under their clone - the very
-# thing this replaced). The indent is therefore part of the label, and adjacency
-# comes from creating the repo rows immediately after their story row, since the
-# sidebar orders by creation. A repo added to an existing story lands at the
-# bottom of the list rather than under its story until herdr is restarted.
+# thing this replaced). Two things stand in for it:
+#
+#   * the connector, reported as each repo row's $tree token so it renders to
+#     the LEFT of the state icon. Indenting the label alone cannot work - the
+#     bullet comes from state_icon, which is the first thing in the row - which
+#     is why $CHILD_LABEL_PREFIX is only the fallback for a config.toml that
+#     does not lay the row out that way.
+#   * adjacency, from creating the repo rows immediately after their story row,
+#     since the sidebar orders by creation. A repo added to an existing story
+#     lands at the bottom of the list rather than under its story until herdr is
+#     restarted.
 function Initialize-StoryWorkspace {
   $notes = Get-StoryNotesPath
   $storyCmds = @{ claude = $CLAUDE_CMD; cursor = $CURSOR_CMD }
@@ -465,16 +528,38 @@ function Initialize-StoryWorkspace {
 
   $ws = Initialize-Workspace $script:STORY_DIR "$($script:ID)-$($script:SLUG)" $STORY_TABS $storyCmds
   if (-not $ws) { return }
+  # The story row is the trunk: no connector. An absent token renders as nothing,
+  # the same way $jj_status does on a workspace that is not a jj repo.
+  Set-TreeToken $ws ''
 
-  foreach ($repo in (Get-StoryRepos)) {
+  $tree = Test-TreeTokenConfigured
+  $repos = @(Get-StoryRepos)
+  for ($i = 0; $i -lt $repos.Count; $i++) {
+    $repo = $repos[$i]
     $dir = Join-Path $script:STORY_DIR $repo
     $repoNotes = Get-RepoNotesPath $repo
     $repoCmds = @{ claude = $CLAUDE_CMD }
     if (Test-Path -LiteralPath $repoNotes) {
       $repoCmds['notes'] = "micro $(ConvertTo-PsLiteral $repoNotes)"
     }
+    # Connectors are re-reported every run, so the repo that used to be last
+    # gives up its corner when a new one is added after it.
+    $connector = if ($i -eq $repos.Count - 1) { $TREE_LAST } else { $TREE_BRANCH }
+    $label = if ($tree) { $repo } else { "$CHILD_LABEL_PREFIX$repo" }
     Write-Host "-> repo:   $repo"
-    Initialize-Workspace $dir "$CHILD_LABEL_PREFIX$repo" $REPO_TABS $repoCmds | Out-Null
+    $rws = Initialize-Workspace $dir $label $REPO_TABS $repoCmds
+    Set-TreeToken $rws $connector
+  }
+
+  if (-not $tree -and $repos.Count -gt 0) {
+    Write-Host ''
+    Write-Host 'NOTE: the repo rows are indented by their label, so their bullets still sit'
+    Write-Host '      hard left. To indent the bullet and draw connectors, add this to'
+    Write-Host "      $(Get-HerdrConfigPath) and run 'herdr server reload-config':"
+    Write-Host ''
+    Write-Host '        [ui.sidebar.spaces]'
+    Write-Host '        rows = [["$tree", "state_icon", "workspace"]]'
+    Write-Host ''
   }
 }
 
