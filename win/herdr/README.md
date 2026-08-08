@@ -4,6 +4,11 @@ Native Windows PowerShell port of the WSL Herdr + herdr-plus workflow for
 multi-repo story worktrees (dev and review). Bash source of truth lives in
 [`wsl/herdr/`](../../wsl/herdr/).
 
+> **Diverged from `wsl/herdr/`.** The Windows scripts are now **task-centric**:
+> one herdr workspace per story, repos as folders inside it. The bash scripts are
+> still repo-centric (one workspace per repo worktree, nested under its clone).
+> See [Story navigation](#story-navigation-one-workspace-per-task).
+
 > **Windows beta.** Plugins are **preview**; `herdr --remote` is unsupported.
 > See [Windows beta](https://herdr.dev/docs/windows-beta/).
 
@@ -116,17 +121,78 @@ Seed Agent Usage when a Windows action exists (or from WSL):
 herdr plugin action invoke usagebar.setup
 ```
 
-## Worktree tabs
+## Story navigation: one workspace per task
 
-Wildcard layout (`repo = "*"`) opens notes / claude / cursor / pwsh. On create,
-`worktree-make.ps1` owns labels and starts commands via `herdr pane run`.
+The story folder on disk has always been task-first:
 
-| Tab | Renamed to | Command |
-|-----|------------|---------|
-| notes | `notes-{id}-{slug}` | `micro <notes path>` |
-| claude | `{repo} claude` | `claude --permission-mode auto` |
-| cursor | `{repo} cursor` | `agent --auto-review` |
-| pwsh | `{repo} pwsh` | bare PowerShell |
+```
+<worktrees.directory>\development\{id}-{slug}\
+    repo1\                      git worktree
+    repo2\                      git worktree
+    {id}-{slug}-repo1.txt       notes, one per repo
+    {id}-{slug}-repo2.txt
+```
+
+herdr's sidebar used to read the other way round, because it groups workspaces
+by their source repository (`worktree.repo_key`) and nests linked worktrees under
+their primary clone — grouping that is built in, with no config for it:
+
+```
+repo1
+  {id}-{slug}
+repo2
+  {id}-{slug}
+```
+
+A story across four repos was therefore four unrelated rows in four different
+groups. `herdr worktree create --workspace <ID>` is not a way out: `--workspace`
+and `--cwd` are mutually exclusive, and `--workspace` only says which workspace
+to take the *source repo* from — it still creates a workspace of its own.
+
+So `worktree-make.ps1` adds the worktrees with plain `git worktree add` and gives
+the story **one ordinary workspace** whose cwd is the story folder. A workspace
+with no worktree metadata is not grouped at all, so the sidebar now reads one row
+per task, matching the folders:
+
+```
+{id}-{slug}
+{other-id}-{other-slug}
+```
+
+### Worktree tabs
+
+All four tabs open at the **story root**, so one agent sees every repo in the
+story at once (`cd repo1` from any of them).
+
+| Tab | Command |
+|-----|---------|
+| notes | `micro <notes file of the first repo requested>` |
+| claude | `claude --permission-mode auto` |
+| cursor | `agent --auto-review` |
+| pwsh | bare PowerShell |
+
+Re-running for the same story reuses the workspace, creates only the tabs that
+are missing, and starts commands **only in tabs it just created** — a tab you are
+already working in is never typed into.
+
+### What this gives up
+
+Story workspaces are not registered with herdr as worktrees, so:
+
+* `herdr worktree remove` / the worktree picker do not see them.
+  `worktree-remove.ps1` closes the workspace and uses `git worktree remove`
+  instead (it still handles the old per-repo workspaces of existing stories).
+* [`worktree-layout.toml`](worktree-layout.toml) no longer fires for them. It is
+  still installed and still correct for worktrees opened through herdr's own UI.
+* `branch` / `git_status` sidebar tokens are blank on a story row — there is no
+  single branch for a four-repo story. Keep the one-row layout:
+
+  ```toml
+  [ui.sidebar.spaces]
+  rows = [["state_icon", "workspace"]]
+  ```
+
+The checkouts themselves are ordinary git worktrees, unchanged.
 
 ## Daily use
 
@@ -165,7 +231,8 @@ herdr server reload-config
 3. In herdr: **prefix+down** → **New Dev Worktree** (or invoke
    `quick-actions-windows`).
 4. Expect story under `<worktrees.directory>\development\<id>-<slug>\` with
-   notes + worktrees + tabs as above.
+   notes + worktrees as above, and a **single** sidebar row `<id>-<slug>` holding
+   the four tabs.
 
 Non-interactive (if test repos exist):
 
@@ -182,8 +249,11 @@ clone, then delete the story folder under `[worktrees].directory`).
 `worktree-make.ps1` guarantees a new worktree sits on the tip of
 `origin/<default branch>`, and prints a `-> verify: HEAD <sha> == origin/<branch>`
 line proving it. It gets there by owning the branch itself rather than trusting
-`herdr worktree create --base`, which silently ignores `--base` whenever the
-local branch already exists and just checks it out wherever it happens to point.
+`herdr worktree create --base`, which silently ignored `--base` whenever the
+local branch already existed and just checked it out wherever it happened to
+point. (The worktree is now added with `git worktree add` — see
+[Story navigation](#story-navigation-one-workspace-per-task) — but the branch is
+still positioned by this script, not by whatever checks it out.)
 
 What it does per repo:
 
@@ -219,6 +289,8 @@ powershell -File win\herdr\tests\test-worktree-make.ps1     # needs herdr runnin
 powershell -File win\herdr\tests\test-worktree-remove.ps1   # no herdr needed
 ```
 
-Both build throwaway repos under `tests\.tmp` and assert on real behaviour
+Both build throwaway repos under the temp directory and assert on real behaviour
 (stale origin refs, leftover branches, fetch failure, protected default
-branches, dirty-worktree keeps). They never touch your real repos or worktrees.
+branches, dirty-worktree keeps, and the one-workspace-per-story topology). They
+never touch your real repos or worktrees, and the make suite closes every
+workspace it created.

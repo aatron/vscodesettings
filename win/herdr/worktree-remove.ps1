@@ -3,6 +3,16 @@
 # folder it removes via herdr (with git fallback), deletes the local branch,
 # then deletes notes and the story folder.
 #
+# Two herdr shapes have to be handled, because worktree-make.ps1 changed:
+#   * story workspace (current) - ONE plain workspace per story, no worktree
+#     metadata, its panes rooted at the story folder. Closed FIRST, and only
+#     when every worktree in that story is going away: its agents run at the
+#     story root and hold files inside the repos open, so removing checkouts
+#     underneath a live pane is what leaves undeletable debris behind.
+#   * per-repo worktree workspace (legacy) - one herdr-registered worktree
+#     workspace per repo, matched by checkout path. Stories created before the
+#     switch still look like this, so `herdr worktree remove` stays.
+#
 # Environment hooks (used by az-watcher; all optional):
 #   WT_ID, WT_ASSUME_YES, WT_REPO, WT_SKIP_DIRTY
 #
@@ -135,20 +145,57 @@ function Get-SlugFromStoryName([string]$Name, [string]$Id) {
   return $s
 }
 
-function Get-WorkspaceIdForPath([string]$Path) {
+# herdr reports paths with either separator, and sometimes with doubled
+# backslashes; Windows paths are also case-insensitive. Compare on this form.
+function Get-PathKey([string]$Path) {
+  if (-not $Path) { return '' }
+  return ($Path -replace '\\+', '/').TrimEnd('/').ToLowerInvariant()
+}
+
+function Get-WorkspaceList {
   $lines = Invoke-Native 'herdr' @('workspace', 'list')
-  if ($lines.Count -eq 0) { return '' }
+  if ($lines.Count -eq 0) { return @() }
   $obj = $null
-  try { $obj = ($lines -join "`n") | ConvertFrom-Json } catch { return '' }
+  try { $obj = ($lines -join "`n") | ConvertFrom-Json } catch { return @() }
+  return @($obj.result.workspaces)
+}
+
+# Legacy shape: the herdr-registered worktree workspace for one repo checkout.
+function Get-WorkspaceIdForPath([string]$Path) {
   $norm = (Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue)
   if ($norm) { $Path = $norm.Path }
-  # herdr reports checkout_path with either separator, and sometimes with
-  # doubled backslashes; compare on a normalised form.
-  $want = ($Path -replace '\\', '/').TrimEnd('/')
-  foreach ($w in @($obj.result.workspaces)) {
+  $want = Get-PathKey $Path
+  if (-not $want) { return '' }
+  foreach ($w in (Get-WorkspaceList)) {
     if ($null -eq $w -or $null -eq $w.worktree) { continue }
-    $have = ("$($w.worktree.checkout_path)" -replace '\\+', '/').TrimEnd('/')
-    if ($have -eq $want) { return "$($w.workspace_id)" }
+    if ((Get-PathKey "$($w.worktree.checkout_path)") -eq $want) { return "$($w.workspace_id)" }
+  }
+  return ''
+}
+
+# Current shape: the story's own workspace. Identified by the cwd of its panes,
+# not by its label - a label is a display name the user can change, and a
+# development story and a review story of the same id legitimately share one.
+function Get-StoryWorkspaceId([string]$StoryDir) {
+  $norm = (Resolve-Path -LiteralPath $StoryDir -ErrorAction SilentlyContinue)
+  if ($norm) { $StoryDir = $norm.Path }
+  $want = Get-PathKey $StoryDir
+  if (-not $want) { return '' }
+  foreach ($w in (Get-WorkspaceList)) {
+    # A worktree workspace belongs to a repo checkout, never to the story root.
+    if ($null -eq $w -or $null -ne $w.worktree) { continue }
+    $ws = "$($w.workspace_id)"
+    $lines = Invoke-Native 'herdr' @('pane', 'list', '--workspace', $ws)
+    if ($lines.Count -eq 0) { continue }
+    $panes = $null
+    try { $panes = (($lines -join "`n") | ConvertFrom-Json).result.panes } catch { continue }
+    foreach ($p in @($panes)) {
+      if ($null -eq $p) { continue }
+      $have = Get-PathKey "$($p.cwd)"
+      # "under" as well as "equal": a pane the user cd'd into one of the repos
+      # still belongs to this story.
+      if ($have -eq $want -or $have.StartsWith("$want/")) { return $ws }
+    }
   }
   return ''
 }
@@ -211,6 +258,9 @@ $WtWs = [System.Collections.Generic.List[string]]::new()
 $WtStoryDirs = [System.Collections.Generic.List[string]]::new()
 $WtSlugs = [System.Collections.Generic.List[string]]::new()
 $Leftovers = [System.Collections.Generic.List[string]]::new()
+# Story workspaces to close up front (parallel lists: story dir / workspace id).
+$StoryWsDirs = [System.Collections.Generic.List[string]]::new()
+$StoryWsIds = [System.Collections.Generic.List[string]]::new()
 $DirtySkipped = 0
 $Stuck = 0
 $RemovedCount = 0
@@ -219,6 +269,11 @@ foreach ($storyDir in $Candidates) {
   $storyName = Split-Path -Leaf $storyDir
   $slug = Get-SlugFromStoryName $storyName $ID
   $Plan.Add("story ${storyName}:") | Out-Null
+  # Worktrees this story has, versus the ones this run will take out. The story
+  # workspace is only closed when those two agree - a WT_REPO-scoped removal, or
+  # one held back by WT_SKIP_DIRTY, leaves the story (and its agents) alive.
+  $wtTotal = 0
+  $wtRemoving = 0
 
   foreach ($dirEnt in (Get-ChildItem -LiteralPath $storyDir -Directory -ErrorAction SilentlyContinue)) {
     $wt = $dirEnt.FullName
@@ -239,6 +294,7 @@ foreach ($storyDir in $Candidates) {
       continue
     }
     $repo = $dirEnt.Name
+    $wtTotal++
     if ($env:WT_REPO -and $repo -ne $env:WT_REPO) {
       $Plan.Add("  keep     $wt (not $($env:WT_REPO))") | Out-Null
       continue
@@ -263,6 +319,7 @@ foreach ($storyDir in $Candidates) {
     }
     $ws = ''
     try { $ws = Get-WorkspaceIdForPath $wt } catch { $ws = '' }
+    $wtRemoving++
     $WtDirs.Add($wt) | Out-Null
     $WtRepoNames.Add($repo) | Out-Null
     $WtBranches.Add($branch) | Out-Null
@@ -274,6 +331,18 @@ foreach ($storyDir in $Candidates) {
     $Plan.Add("    branch  $(if ($branch) { $branch } else { '<detached>' }) (in $(if ($primary) { $primary } else { '<unknown clone>' }))") | Out-Null
     $Plan.Add("    notes   $storyDir\${ID}-${slug}-${repo}.txt") | Out-Null
     if ($ws) { $Plan.Add("    herdr   remove worktree + workspace $ws") | Out-Null }
+  }
+
+  if ($wtRemoving -eq $wtTotal) {
+    $sws = ''
+    try { $sws = Get-StoryWorkspaceId $storyDir } catch { $sws = '' }
+    if ($sws) {
+      $StoryWsDirs.Add($storyDir) | Out-Null
+      $StoryWsIds.Add($sws) | Out-Null
+      $Plan.Add("  herdr    close story workspace $sws (notes/claude/cursor/pwsh)") | Out-Null
+    }
+  } elseif ($wtTotal -gt 0) {
+    $Plan.Add("  herdr    story workspace left open ($($wtTotal - $wtRemoving) worktree(s) staying)") | Out-Null
   }
 
   if (-not $env:WT_REPO) {
@@ -315,6 +384,22 @@ if ($env:WT_ASSUME_YES -eq '1') {
 }
 
 # --- execute ---------------------------------------------------------------
+# Close each story's own workspace BEFORE touching any checkout. Its tabs run at
+# the story root, so claude/cursor there hold files inside the repos open; pull
+# the checkouts out from under them and `git worktree remove` fails on locked
+# files, leaving exactly the half-deleted debris this script then has to mop up.
+for ($i = 0; $i -lt $StoryWsIds.Count; $i++) {
+  $sws = $StoryWsIds[$i]
+  $sname = Split-Path -Leaf $StoryWsDirs[$i]
+  if (Test-Herdr @('workspace', 'close', $sws)) {
+    Write-Host "-> closed herdr workspace $sws ($sname)"
+  } else {
+    Write-Warning "could not close herdr workspace $sws ($sname); carrying on"
+  }
+}
+# Panes do not die the instant the workspace closes; give their handles a moment.
+if ($StoryWsIds.Count -gt 0) { Start-Sleep -Milliseconds 500 }
+
 # Empty non-worktree debris first, so the story folder can actually go away.
 foreach ($leftover in $Leftovers) {
   $lws = ''
@@ -405,8 +490,14 @@ foreach ($storyDir in $Candidates) {
   Get-ChildItem -LiteralPath $typeDir -Filter "${ID}-${slug}-*.txt" -File -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
   if ($storyName -like "${ID}-*" -or $storyName -like "${ID}_*") {
-    Remove-Item -LiteralPath $storyDir -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "-> removed folder $storyDir"
+    # Retry: the story workspace was closed moments ago and its panes may still
+    # be letting go of the folder they were rooted in.
+    if (Remove-DirRetry $storyDir) {
+      Write-Host "-> removed folder $storyDir"
+    } else {
+      Write-Warning "could not delete story folder $storyDir (something still has it open)"
+      $Stuck++
+    }
   }
 }
 

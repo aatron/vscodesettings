@@ -2,20 +2,44 @@
 # Create a multi-repo herdr worktree structure for an Azure DevOps story.
 # Two types: development and review.
 #
-# Tabs come from herdr-plus Worktree Auto-Layout (worktree-layout.toml,
-# repo = "*"): notes, claude, cursor, pwsh at each worktree root. Layouts cannot
-# interpolate the repo/story name, and their tab commands do not reliably start,
-# so THIS SCRIPT owns the labels *and* the commands after create.
-#   development / review    -> notes, claude, cursor, pwsh
+# THE WORKSPACE IS THE STORY, NOT THE REPO:
+#   herdr's sidebar groups workspaces by their source repository
+#   (worktree.repo_key) and nests linked worktrees under their primary clone.
+#   That grouping is built in - there is no config for it - so a workspace made
+#   with `herdr worktree create` ALWAYS lands under its clone, and a story
+#   spanning four repos became four unrelated rows in four different groups:
+#       repo1 -> {id}-{slug}
+#       repo2 -> {id}-{slug}
+#   `herdr worktree create --workspace <ID>` is not a way out: --workspace and
+#   --cwd are mutually exclusive, and --workspace only says which workspace to
+#   take the SOURCE REPO from - it still creates a workspace of its own.
+#   So this script adds the worktrees with plain `git worktree add` and gives
+#   the story ONE ordinary workspace whose cwd is the story folder. A workspace
+#   with no worktree metadata is not grouped at all, so the sidebar reads one
+#   row per story:
+#       {id}-{slug}
+#   and every repo is a sub-folder of that row's cwd:
+#       {id}-{slug}/repo1
+#       {id}-{slug}/repo2
+#
+#   Its four tabs all open at the story root, so a single agent sees every repo
+#   in the story at once:
+#       notes   micro on the notes file of the first repo requested
+#       claude  $CLAUDE_CMD
+#       cursor  $CURSOR_CMD
+#       pwsh    bare shell
+#   Re-running for the same story reuses the workspace and adds only the tabs
+#   that are missing. Commands are submitted ONLY into tabs the run created, so
+#   a tab you are already working in is never typed into.
 #
 # Git behavior on create - THE SCRIPT OWNS THE BRANCH, NOT HERDR:
-#   `herdr worktree create --base <ref>` silently IGNORES --base when the local
-#   branch already exists: it just checks that branch out wherever it happens to
-#   point and still reports success. A branch left behind by an earlier story
+#   `herdr worktree create --base <ref>` silently IGNORED --base when the local
+#   branch already existed: it just checked that branch out wherever it happened
+#   to point and still reported success. A branch left behind by an earlier story
 #   (removal that could not delete it, a worktree deleted by hand, another tool)
 #   therefore produced a worktree pinned to an old commit - "you are N commits
-#   behind" - with nothing in the output to say so.
-#   So every worktree is now created in this order:
+#   behind" - with nothing in the output to say so. The script now runs
+#   `git worktree add` itself, but it still owns the branch position outright:
 #     1. `git fetch --prune origin`, WITH the exit code checked (one retry).
 #        A failed fetch aborts the repo - never fall back to a stale origin.
 #     2. `git remote set-head origin --auto` so refs/remotes/origin/HEAD (which
@@ -23,8 +47,8 @@
 #     3. Resolve the base to an explicit commit sha and verify it exists.
 #     4. Put the local branch at exactly that sha - create it, fast-forward a
 #        leftover branch that holds no unique commits, or refuse (see below).
-#     5. Call herdr, then VERIFY the new worktree's HEAD is that sha, repairing
-#        a clean worktree once with `git reset --hard` before giving up.
+#     5. `git worktree add`, then VERIFY the new worktree's HEAD is that sha,
+#        repairing a clean worktree once with `git reset --hard` before giving up.
 #   development -> base is origin/<default branch>
 #   review      -> base is origin/<linked branch>
 #   all types -> the branch's upstream is pointed at its OWN name on origin
@@ -57,6 +81,10 @@ $BRANCH_PREFIX = 'feature/aaron'
 # Story worktree base comes from Herdr config [worktrees].directory
 $CLAUDE_CMD = 'claude --permission-mode auto'
 $CURSOR_CMD = 'agent --auto-review'
+
+# The tabs of a story workspace, in the order they are created. All four open at
+# the story root - the repos are sub-folders of it.
+$STORY_TABS = @('notes', 'claude', 'cursor', 'pwsh')
 
 # ===========================================================================
 $Type = if ($args.Count -ge 1) { $args[0] } else { '' }
@@ -172,15 +200,6 @@ function Invoke-HerdrQuiet([string[]]$HerdrArgs) {
   try { & herdr @HerdrArgs 2>$null | Out-Null } catch { } finally { $ErrorActionPreference = $prev }
 }
 
-function Get-TabIdByLabel($Json, [string]$Ws, [string]$Label) {
-  if ($null -eq $Json) { return '' }
-  foreach ($tab in @($Json.result.tabs)) {
-    if ($null -eq $tab) { continue }
-    if ($tab.workspace_id -eq $Ws -and $tab.label -eq $Label) { return "$($tab.tab_id)" }
-  }
-  return ''
-}
-
 function Get-PaneIdByTab([string]$Ws, [string]$Tab) {
   $json = Invoke-HerdrJson @('pane', 'list', '--workspace', $Ws)
   if ($null -eq $json) { return '' }
@@ -205,7 +224,11 @@ function Test-PaneReadyAndIdle([string]$Pane) {
   }
   if ($names.Count -eq 0) { return $true }
   foreach ($n in $names) {
-    $n = $n.Trim()
+    # herdr reports Windows process names complete with their extension
+    # ("powershell.exe"), which matched none of the shell names below - so every
+    # freshly created pane looked BUSY and the script quietly skipped every
+    # command it was supposed to start in it. Compare on the bare name.
+    $n = [IO.Path]::GetFileNameWithoutExtension($n.Trim())
     if (-not $n) { continue }
     switch -Regex ($n) {
       '^(pwsh|powershell|powershell_ise|cmd|bash|sh|dash|zsh|fish|-bash|-sh|-zsh)$' { continue }
@@ -239,34 +262,137 @@ function Write-RepoNotes([string]$Repo) {
   if (-not (Test-Path -LiteralPath $notes)) {
     New-Item -ItemType File -Path $notes -Force | Out-Null
   }
+  # Sidecar for the herdr-plus worktree layout. That layout no longer runs for
+  # story worktrees (nothing registers them with herdr any more), but it still
+  # fires if the worktree is later opened through herdr's own worktree UI.
   Set-Content -LiteralPath (Join-Path $script:STORY_DIR ".notespath-$Repo") -Value $notes -NoNewline
   Write-Host "-> notes:  $notes"
 }
 
-function Setup-RepoTabs([string]$Ws, [string]$Repo) {
-  $wt = Join-Path $script:STORY_DIR $Repo
-  $notes = Get-RepoNotesPath $Repo
-  $deadline = [DateTime]::UtcNow.AddSeconds(20)
-  while ([DateTime]::UtcNow -lt $deadline) {
-    $json = Invoke-HerdrJson @('tab', 'list', '--workspace', $Ws)
-    $notesTab = Get-TabIdByLabel $json $Ws 'notes'
-    $claudeTab = Get-TabIdByLabel $json $Ws 'claude'
-    $cursorTab = Get-TabIdByLabel $json $Ws 'cursor'
-    $pwshTab = Get-TabIdByLabel $json $Ws 'pwsh'
-    if ($notesTab -and $claudeTab -and $cursorTab -and $pwshTab) {
-      Invoke-HerdrQuiet @('tab', 'rename', $notesTab, "notes-$($script:ID)-$($script:SLUG)")
-      Invoke-HerdrQuiet @('tab', 'rename', $claudeTab, "$Repo claude")
-      Invoke-HerdrQuiet @('tab', 'rename', $cursorTab, "$Repo cursor")
-      Invoke-HerdrQuiet @('tab', 'rename', $pwshTab, "$Repo pwsh")
-      $notesLit = "'" + ($notes -replace "'", "''") + "'"
-      Invoke-InTab $Ws $notesTab $wt "micro $notesLit"
-      Invoke-InTab $Ws $claudeTab $wt $CLAUDE_CMD
-      Invoke-InTab $Ws $cursorTab $wt $CURSOR_CMD
+# The notes file the story's notes tab opens: the first repo that was asked for,
+# falling back to the first one that actually ended up with a notes file (the
+# first repo may have failed).
+function Get-StoryNotesPath {
+  foreach ($repo in $script:RepoOrder) {
+    $p = Get-RepoNotesPath $repo
+    if (Test-Path -LiteralPath $p) { return $p }
+  }
+  if ($script:RepoOrder.Count -gt 0) { return (Get-RepoNotesPath $script:RepoOrder[0]) }
+  return ''
+}
+
+# Compare paths herdr reports against paths we built. herdr hands back either
+# separator, and sometimes doubled backslashes; Windows paths are also
+# case-insensitive.
+function Get-PathKey([string]$Path) {
+  if (-not $Path) { return '' }
+  return ($Path -replace '\\+', '/').TrimEnd('/').ToLowerInvariant()
+}
+
+# The story's workspace, or '' when it does not have one yet.
+#
+# Matched on the cwd of its panes, never on the label: a label is a display name
+# the user can change, and a development story and a review story of the same id
+# legitimately share one. Worktree workspaces are skipped outright - they belong
+# to a repo checkout, never to the story root (and they are what this script
+# stopped creating).
+function Find-StoryWorkspace {
+  $json = Invoke-HerdrJson @('workspace', 'list')
+  if ($null -eq $json) { return '' }
+  $want = Get-PathKey $script:STORY_DIR
+  if (-not $want) { return '' }
+  foreach ($w in @($json.result.workspaces)) {
+    if ($null -eq $w -or $null -ne $w.worktree) { continue }
+    $ws = "$($w.workspace_id)"
+    $panes = Invoke-HerdrJson @('pane', 'list', '--workspace', $ws)
+    if ($null -eq $panes) { continue }
+    foreach ($p in @($panes.result.panes)) {
+      if ($null -eq $p) { continue }
+      $have = Get-PathKey "$($p.cwd)"
+      # "under" as well as "equal": a pane the user cd'd into a repo is still
+      # this story's workspace, and matching only the root would duplicate it.
+      if ($have -eq $want -or $have.StartsWith("$want/")) { return $ws }
+    }
+  }
+  return ''
+}
+
+function Get-StoryTabMap([string]$Ws) {
+  $map = @{}
+  $json = Invoke-HerdrJson @('tab', 'list', '--workspace', $Ws)
+  if ($null -eq $json) { return $map }
+  foreach ($tab in @($json.result.tabs)) {
+    if ($null -eq $tab) { continue }
+    $label = "$($tab.label)"
+    if ($label -and -not $map.ContainsKey($label)) { $map[$label] = "$($tab.tab_id)" }
+  }
+  return $map
+}
+
+# One workspace for the whole story, with the four story tabs at its root.
+# Cosmetic relative to the worktrees themselves: every failure in here warns and
+# carries on, because the checkouts on disk are already correct and usable.
+#
+# Commands are only ever submitted into tabs THIS RUN created. Test-PaneReadyAndIdle
+# is not enough on its own: herdr reports claude.exe in a busy pane but reports
+# only the shell for a pane sitting in micro, so a re-run that trusted the probe
+# would type "micro <path>" straight into the open notes buffer.
+function Initialize-StoryWorkspace {
+  $label = "$($script:ID)-$($script:SLUG)"
+  $fresh = @{}
+  $ws = Find-StoryWorkspace
+  if ($ws) {
+    Write-Host "-> herdr:  reusing workspace $ws ($label)"
+  } else {
+    $created = Invoke-HerdrJson @(
+      'workspace', 'create', '--cwd', $script:STORY_DIR, '--label', $label, '--no-focus'
+    )
+    $ws = if ($null -ne $created) { "$($created.result.workspace.workspace_id)" } else { '' }
+    if (-not $ws) {
+      if ($script:HerdrErr) { Write-Host $script:HerdrErr }
+      Write-Warning ("could not create the herdr workspace for $label - the worktrees " +
+        "are fine; open $($script:STORY_DIR) by hand")
       return
     }
-    Start-Sleep -Milliseconds 200
+    # A new workspace arrives with one numbered tab. Reuse it as the notes tab
+    # rather than leaving a stray "1" alongside four created ones.
+    $rootTab = "$($created.result.tab.tab_id)"
+    if ($rootTab) {
+      Invoke-HerdrQuiet @('tab', 'rename', $rootTab, $STORY_TABS[0])
+      $fresh[$STORY_TABS[0]] = $true
+    }
+    Write-Host "-> herdr:  workspace $ws created at $($script:STORY_DIR)"
   }
-  Write-Warning "timed out waiting for notes/claude/cursor/pwsh tabs in workspace $Ws"
+
+  $tabs = Get-StoryTabMap $ws
+  foreach ($name in $STORY_TABS) {
+    if ($tabs.ContainsKey($name)) { continue }
+    $t = Invoke-HerdrJson @(
+      'tab', 'create', '--workspace', $ws, '--cwd', $script:STORY_DIR, '--label', $name, '--no-focus'
+    )
+    $id = if ($null -ne $t) { "$($t.result.tab.tab_id)" } else { '' }
+    if ($id) {
+      $tabs[$name] = $id
+      $fresh[$name] = $true
+    } else {
+      Write-Warning "could not create the '$name' tab in workspace $ws"
+    }
+  }
+
+  $notes = Get-StoryNotesPath
+  if ($fresh['notes'] -and $tabs['notes'] -and $notes) {
+    $notesLit = "'" + ($notes -replace "'", "''") + "'"
+    Invoke-InTab $ws $tabs['notes'] $script:STORY_DIR "micro $notesLit"
+  }
+  if ($fresh['claude'] -and $tabs['claude']) { Invoke-InTab $ws $tabs['claude'] $script:STORY_DIR $CLAUDE_CMD }
+  if ($fresh['cursor'] -and $tabs['cursor']) { Invoke-InTab $ws $tabs['cursor'] $script:STORY_DIR $CURSOR_CMD }
+
+  $notesName = if ($notes) { Split-Path -Leaf $notes } else { 'none' }
+  $started = @($STORY_TABS | Where-Object { $fresh[$_] })
+  $kept = @($STORY_TABS | Where-Object { -not $fresh[$_] })
+  Write-Host "-> tabs:   $($STORY_TABS -join ', ') at the story root (notes -> $notesName)"
+  if ($started.Count -gt 0) { Write-Host "           started: $($started -join ', ')" }
+  if ($kept.Count -gt 0) { Write-Host "           left as they were: $($kept -join ', ')" }
 }
 
 function Ask-Gum([string]$Prompt, [string]$Placeholder) {
@@ -578,16 +704,9 @@ function New-Worktree([string]$Repo, [string]$Branch, [string]$BaseKind) {
   $expected = Set-BranchAtBase $src $Branch $base $baseLabel
   if (-not $expected) { return }
 
-  Write-RepoNotes $Repo
-
-  $created = Invoke-HerdrJson @(
-    'worktree', 'create', '--cwd', $src, '--branch', $Branch, '--base', $expected,
-    '--path', $path, '--label', "$($script:ID)-$($script:SLUG)", '--no-focus'
-  )
-  $ws = if ($null -ne $created) { "$($created.result.workspace.workspace_id)" } else { '' }
-  if (-not $ws) {
-    if ($script:HerdrErr) { Write-Host $script:HerdrErr }
-    Repo-Fail "herdr worktree create failed for $Repo"
+  # The branch is already sitting on $expected, so this only checks it out.
+  if (-not (Git-Run $src @('worktree', 'add', $path, $Branch))) {
+    Repo-Fail "git worktree add failed for $Repo at $path (exit $script:GitExit)"
     return
   }
 
@@ -595,13 +714,7 @@ function New-Worktree([string]$Repo, [string]$Branch, [string]$BaseKind) {
 
   $script:Created++
   Set-PushUpstream $path $Branch
-
-  # Tab decoration is cosmetic: never let it fail an otherwise good worktree.
-  try {
-    Setup-RepoTabs $ws $Repo
-  } catch {
-    Write-Warning "worktree for $Repo is ready, but tab setup failed: $_"
-  }
+  Write-RepoNotes $Repo
 }
 
 # --- roots -----------------------------------------------------------------
@@ -626,6 +739,9 @@ if (-not $script:ID -or -not $script:SLUG) {
 $BRANCH = "$BRANCH_PREFIX/$($script:ID)-$($script:SLUG)"
 $TYPE_DIR = Join-Path $WORKTREE_ROOT $SUBFOLDER
 $script:STORY_DIR = Join-Path $TYPE_DIR "$($script:ID)-$($script:SLUG)"
+# Repos in the order they were requested. The first one owns the notes file the
+# story's notes tab opens.
+$script:RepoOrder = @()
 
 New-Item -ItemType Directory -Force -Path $script:STORY_DIR | Out-Null
 Write-Host "-> story:  $($script:STORY_DIR)"
@@ -652,6 +768,7 @@ if ($Type -eq 'development') {
   foreach ($repo in ($REPOS -split ',')) {
     $repo = $repo.Trim()
     if (-not $repo) { continue }
+    $script:RepoOrder += $repo
     try {
       New-Worktree $repo $BRANCH 'default'
     } catch {
@@ -659,7 +776,6 @@ if ($Type -eq 'development') {
       Write-Warning "skipped ${repo}: $_"
     }
   }
-  Write-Host "OK development ready at $($script:STORY_DIR)"
 }
 
 # ===========================================================================
@@ -693,6 +809,7 @@ repo-c:feature/aaron/$($script:ID)-$($script:SLUG)
     $branch = $line.Substring($idx + 1).Trim()
     if (-not $repo -or -not $branch) { continue }
     $attempted++
+    $script:RepoOrder += $repo
     try {
       New-Worktree $repo $branch 'remote'
     } catch {
@@ -705,8 +822,21 @@ repo-c:feature/aaron/$($script:ID)-$($script:SLUG)
     Write-Error "no usable '<repo>:<branch>' lines in $BRANCHES"
     exit 1
   }
-  Write-Host "OK review ready at $($script:STORY_DIR)"
 }
+
+# One workspace for the whole story, opened once the repos are in place: its
+# tabs live at the story root and the notes tab has to know which notes files
+# exist. Also runs on a pure re-run (Created 0, Skipped > 0) so a story whose
+# workspace was closed gets it back instead of silently staying invisible.
+if (($script:Created + $script:Skipped) -gt 0) {
+  try {
+    Initialize-StoryWorkspace
+  } catch {
+    Write-Warning "worktrees are ready, but the herdr workspace setup failed: $_"
+  }
+}
+
+Write-Host "OK $Type ready at $($script:STORY_DIR)"
 
 if ($script:Failed -gt 0) {
   Write-Host "-> $($script:Failed) repo(s) failed - see the errors above"

@@ -104,9 +104,12 @@ function Invoke-Make([string]$Type, [hashtable]$Env) {
 }
 
 # Close every workspace this harness created. Matching is by PATH, not label:
-# herdr does not always keep the --label we passed (it often shows the repo
-# name), so a label filter silently leaves fixture workspaces behind in the
-# user's real herdr session.
+# herdr does not always keep the --label we passed, so a label filter silently
+# leaves fixture workspaces behind in the user's real herdr session.
+#
+# Both shapes have to be swept. worktree-make now creates a PLAIN workspace per
+# story (no worktree metadata, panes rooted at the story folder) - matching only
+# on .worktree, as this did originally, leaked one of those per test run.
 function Close-Workspaces {
   $prev = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
@@ -119,15 +122,86 @@ function Close-Workspaces {
     # separators inconsistently, and the marker appears in neither a real repo
     # nor a real worktree.
     foreach ($w in @($obj.result.workspaces)) {
-      if ($null -eq $w -or $null -eq $w.worktree) { continue }
-      $paths = @("$($w.worktree.repo_root)", "$($w.worktree.checkout_path)")
+      if ($null -eq $w) { continue }
+      $paths = @()
+      if ($null -ne $w.worktree) {
+        $paths = @("$($w.worktree.repo_root)", "$($w.worktree.checkout_path)")
+      } else {
+        # A plain workspace only reveals where it lives through its panes.
+        $pj = (& herdr pane list --workspace $w.workspace_id 2>$null | Out-String)
+        if ($pj) {
+          try { $paths = @(($pj | ConvertFrom-Json).result.panes | ForEach-Object { "$($_.cwd)" }) } catch { }
+        }
+      }
       $isMine = $false
       foreach ($p in $paths) { if ($p -like "*$FixtureMarker*") { $isMine = $true } }
       if (-not $isMine) { continue }
-      & herdr worktree remove --workspace $w.workspace_id --force 2>$null | Out-Null
+      if ($null -ne $w.worktree) {
+        & herdr worktree remove --workspace $w.workspace_id --force 2>$null | Out-Null
+      }
       & herdr workspace close $w.workspace_id 2>$null | Out-Null
     }
   } catch { } finally { $ErrorActionPreference = $prev }
+}
+
+# Workspaces whose panes sit at (or under) $Path. Used to assert the story
+# topology: exactly one workspace per story, with the four story tabs.
+function Get-FixtureWorkspaces([string]$Path) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $found = @()
+  try {
+    $json = (& herdr workspace list 2>$null | Out-String)
+    if (-not $json) { return @() }
+    $obj = $null
+    try { $obj = $json | ConvertFrom-Json } catch { return @() }
+    $want = ($Path -replace '\\+', '/').TrimEnd('/').ToLowerInvariant()
+    foreach ($w in @($obj.result.workspaces)) {
+      if ($null -eq $w -or $null -ne $w.worktree) { continue }
+      $pj = (& herdr pane list --workspace $w.workspace_id 2>$null | Out-String)
+      if (-not $pj) { continue }
+      $panes = @()
+      try { $panes = @(($pj | ConvertFrom-Json).result.panes) } catch { continue }
+      foreach ($p in $panes) {
+        if ($null -eq $p) { continue }
+        $have = ("$($p.cwd)" -replace '\\+', '/').TrimEnd('/').ToLowerInvariant()
+        if ($have -eq $want -or $have.StartsWith("$want/")) { $found += $w; break }
+      }
+    }
+  } catch { } finally { $ErrorActionPreference = $prev }
+  return @($found)
+}
+
+# herdr-registered worktree workspaces whose checkout sits inside $Path. These
+# are what `herdr worktree create` used to leave behind - one per repo, each
+# nested under its primary clone in the sidebar. There should now be none.
+function Get-WorktreeWorkspacesUnder([string]$Path) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $found = @()
+  try {
+    $json = (& herdr workspace list 2>$null | Out-String)
+    if (-not $json) { return @() }
+    $obj = $null
+    try { $obj = $json | ConvertFrom-Json } catch { return @() }
+    $want = ($Path -replace '\\+', '/').TrimEnd('/').ToLowerInvariant()
+    foreach ($w in @($obj.result.workspaces)) {
+      if ($null -eq $w -or $null -eq $w.worktree) { continue }
+      $have = ("$($w.worktree.checkout_path)" -replace '\\+', '/').TrimEnd('/').ToLowerInvariant()
+      if ($have.StartsWith("$want/")) { $found += $w }
+    }
+  } catch { } finally { $ErrorActionPreference = $prev }
+  return @($found)
+}
+
+function Get-TabLabels([string]$Ws) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $json = (& herdr tab list --workspace $Ws 2>$null | Out-String)
+    if (-not $json) { return @() }
+    return @(($json | ConvertFrom-Json).result.tabs | ForEach-Object { "$($_.label)" })
+  } catch { return @() } finally { $ErrorActionPreference = $prev }
 }
 
 function Check([string]$Name, [bool]$Ok, [string]$Detail) {
@@ -336,6 +410,46 @@ $res = Invoke-Make 'development' @{ WT_ID = '99014'; WT_SLUG = 'zz-missing'; WT_
 Check 'exit 1' ($res.Code -eq 1) "exit=$($res.Code)`n$($res.Out)"
 Check 'names the missing clone' ($res.Out -match 'missing clone') "no message`n$($res.Out)"
 Check 'good repo created' (Test-Path -LiteralPath (Join-Path (Story '99014' 'zz-missing' 'aaa') '.git')) 'aaa missing'
+
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '15. story topology: ONE workspace for the whole story, four tabs at its root'
+Reset-Fixture
+$a = New-Repo 'aaa' 'main' 1
+$b = New-Repo 'bbb' 'main' 2
+$res = Invoke-Make 'development' @{ WT_ID = '99015'; WT_SLUG = 'zz-topo'; WT_REPOS = 'aaa,bbb' }
+$storyDir = Split-Path -Parent (Story '99015' 'zz-topo' 'aaa')
+Check 'exit 0' ($res.Code -eq 0) "exit=$($res.Code)`n$($res.Out)"
+Check 'both repos are folders inside the story' `
+  ((Test-Path -LiteralPath (Join-Path (Story '99015' 'zz-topo' 'aaa') '.git')) -and
+   (Test-Path -LiteralPath (Join-Path (Story '99015' 'zz-topo' 'bbb') '.git'))) 'a repo is missing'
+$wss = @(Get-FixtureWorkspaces $storyDir)
+Check 'exactly one herdr workspace for the story' ($wss.Count -eq 1) "count=$($wss.Count)`n$($res.Out)"
+if ($wss.Count -eq 1) {
+  Check 'labeled {id}-{slug}' ("$($wss[0].label)" -eq '99015-zz-topo') "label=$($wss[0].label)"
+  # The whole point: a workspace with worktree metadata gets nested under its
+  # primary clone, which is the repo-centric layout this replaced.
+  Check 'not nested under a repo (no worktree metadata)' ($null -eq $wss[0].worktree) 'it is a worktree workspace'
+  $labels = @(Get-TabLabels $wss[0].workspace_id)
+  foreach ($want in @('notes', 'claude', 'cursor', 'pwsh')) {
+    Check "has a '$want' tab" ($labels -contains $want) "tabs=$($labels -join ',')"
+  }
+  Check 'no stray extra tab' ($labels.Count -eq 4) "tabs=$($labels -join ',')"
+}
+Check 'no per-repo worktree workspace was registered' `
+  ((Get-WorktreeWorkspacesUnder $storyDir).Count -eq 0) 'a repo-level worktree workspace exists'
+
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '16. re-running the same story reuses its workspace (no duplicate)'
+$res = Invoke-Make 'development' @{ WT_ID = '99015'; WT_SLUG = 'zz-topo'; WT_REPOS = 'aaa,bbb' }
+$wss2 = @(Get-FixtureWorkspaces $storyDir)
+Check 'exit 3 (nothing to do)' ($res.Code -eq 3) "exit=$($res.Code)`n$($res.Out)"
+Check 'still exactly one workspace' ($wss2.Count -eq 1) "count=$($wss2.Count)`n$($res.Out)"
+Check 'same workspace id' (($wss.Count -eq 1) -and ($wss2.Count -eq 1) -and
+  ($wss2[0].workspace_id -eq $wss[0].workspace_id)) 'a second workspace was created'
+Check 'said it reused it' ($res.Out -match 'reusing workspace') "no reuse line`n$($res.Out)"
+Check 'still four tabs' ((@(Get-TabLabels $wss2[0].workspace_id)).Count -eq 4) 'tab count changed'
 
 # ---------------------------------------------------------------------------
 # Cleanup order matters, and one pass is not enough. herdr keeps a workspace for
