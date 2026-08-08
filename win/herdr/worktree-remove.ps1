@@ -4,11 +4,12 @@
 # then deletes notes and the story folder.
 #
 # Two herdr shapes have to be handled, because worktree-make.ps1 changed:
-#   * story workspace (current) - ONE plain workspace per story, no worktree
-#     metadata, its panes rooted at the story folder. Closed FIRST, and only
-#     when every worktree in that story is going away: its agents run at the
-#     story root and hold files inside the repos open, so removing checkouts
-#     underneath a live pane is what leaves undeletable debris behind.
+#   * story workspaces (current) - plain workspaces, no worktree metadata: the
+#     story row rooted at the story folder plus one indented repo row rooted at
+#     each repo inside it. ALL of them are closed FIRST, and only when every
+#     worktree in that story is going away: their agents hold files in the
+#     checkouts open, so removing a checkout underneath a live pane is what
+#     leaves undeletable debris behind.
 #   * per-repo worktree workspace (legacy) - one herdr-registered worktree
 #     workspace per repo, matched by checkout path. Stories created before the
 #     switch still look like this, so `herdr worktree remove` stays.
@@ -173,16 +174,24 @@ function Get-WorkspaceIdForPath([string]$Path) {
   return ''
 }
 
-# Current shape: the story's own workspace. Identified by the cwd of its panes,
-# not by its label - a label is a display name the user can change, and a
-# development story and a review story of the same id legitimately share one.
-function Get-StoryWorkspaceId([string]$StoryDir) {
+# Current shape: EVERY workspace belonging to the story - the story row itself
+# plus the indented repo row worktree-make.ps1 creates for each repo under it.
+# All of them are matched by the cwd of their panes rather than by label, since
+# every one of those labels is a display name the user can change.
+#
+# "under" as well as "equal" is what picks up the repo rows (cwd = story\repo)
+# and a pane the user cd'd somewhere deeper. Returns ids, story row first where
+# it can tell - closing the shallowest last is not required, but it reads better
+# in the plan.
+function Get-StoryWorkspaceIds([string]$StoryDir) {
   $norm = (Resolve-Path -LiteralPath $StoryDir -ErrorAction SilentlyContinue)
   if ($norm) { $StoryDir = $norm.Path }
   $want = Get-PathKey $StoryDir
-  if (-not $want) { return '' }
+  $found = [System.Collections.Generic.List[string]]::new()
+  if (-not $want) { return $found }
   foreach ($w in (Get-WorkspaceList)) {
-    # A worktree workspace belongs to a repo checkout, never to the story root.
+    # A worktree workspace belongs to a repo checkout registered with herdr,
+    # which is the legacy shape handled per repo further down.
     if ($null -eq $w -or $null -ne $w.worktree) { continue }
     $ws = "$($w.workspace_id)"
     $lines = Invoke-Native 'herdr' @('pane', 'list', '--workspace', $ws)
@@ -192,12 +201,13 @@ function Get-StoryWorkspaceId([string]$StoryDir) {
     foreach ($p in @($panes)) {
       if ($null -eq $p) { continue }
       $have = Get-PathKey "$($p.cwd)"
-      # "under" as well as "equal": a pane the user cd'd into one of the repos
-      # still belongs to this story.
-      if ($have -eq $want -or $have.StartsWith("$want/")) { return $ws }
+      if ($have -eq $want -or $have.StartsWith("$want/")) {
+        if (-not $found.Contains($ws)) { $found.Add($ws) | Out-Null }
+        break
+      }
     }
   }
-  return ''
+  return $found
 }
 
 function Test-WorktreeDirty([string]$Wt) {
@@ -334,15 +344,18 @@ foreach ($storyDir in $Candidates) {
   }
 
   if ($wtRemoving -eq $wtTotal) {
-    $sws = ''
-    try { $sws = Get-StoryWorkspaceId $storyDir } catch { $sws = '' }
-    if ($sws) {
+    $swsIds = @()
+    try { $swsIds = @(Get-StoryWorkspaceIds $storyDir) } catch { $swsIds = @() }
+    foreach ($sws in $swsIds) {
       $StoryWsDirs.Add($storyDir) | Out-Null
       $StoryWsIds.Add($sws) | Out-Null
-      $Plan.Add("  herdr    close story workspace $sws (notes/claude/cursor/pwsh)") | Out-Null
+    }
+    if ($swsIds.Count -gt 0) {
+      $Plan.Add("  herdr    close $($swsIds.Count) story workspace(s): $($swsIds -join ', ')") | Out-Null
+      $Plan.Add("           (the story row and its per-repo rows)") | Out-Null
     }
   } elseif ($wtTotal -gt 0) {
-    $Plan.Add("  herdr    story workspace left open ($($wtTotal - $wtRemoving) worktree(s) staying)") | Out-Null
+    $Plan.Add("  herdr    story workspaces left open ($($wtTotal - $wtRemoving) worktree(s) staying)") | Out-Null
   }
 
   if (-not $env:WT_REPO) {
@@ -384,10 +397,11 @@ if ($env:WT_ASSUME_YES -eq '1') {
 }
 
 # --- execute ---------------------------------------------------------------
-# Close each story's own workspace BEFORE touching any checkout. Its tabs run at
-# the story root, so claude/cursor there hold files inside the repos open; pull
-# the checkouts out from under them and `git worktree remove` fails on locked
-# files, leaving exactly the half-deleted debris this script then has to mop up.
+# Close a story's workspaces - the story row AND its per-repo rows - BEFORE
+# touching any checkout. Their agents hold files inside the checkouts open, and
+# a repo row is rooted in the checkout itself; pull it out from under a live
+# pane and `git worktree remove` fails on locked files, leaving exactly the
+# half-deleted debris this script then has to mop up.
 for ($i = 0; $i -lt $StoryWsIds.Count; $i++) {
   $sws = $StoryWsIds[$i]
   $sname = Split-Path -Leaf $StoryWsDirs[$i]

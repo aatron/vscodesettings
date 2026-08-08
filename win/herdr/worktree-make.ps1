@@ -13,24 +13,32 @@
 #   `herdr worktree create --workspace <ID>` is not a way out: --workspace and
 #   --cwd are mutually exclusive, and --workspace only says which workspace to
 #   take the SOURCE REPO from - it still creates a workspace of its own.
-#   So this script adds the worktrees with plain `git worktree add` and gives
-#   the story ONE ordinary workspace whose cwd is the story folder. A workspace
-#   with no worktree metadata is not grouped at all, so the sidebar reads one
-#   row per story:
-#       {id}-{slug}
-#   and every repo is a sub-folder of that row's cwd:
-#       {id}-{slug}/repo1
-#       {id}-{slug}/repo2
+#   So this script adds the worktrees with plain `git worktree add` and builds
+#   the rows itself. A workspace with no worktree metadata is not grouped at all,
+#   so the sidebar reads story-first, one indented row per repo:
+#       {id}-{slug}          cwd = the story folder
+#         repo1              cwd = {id}-{slug}/repo1
+#         repo2              cwd = {id}-{slug}/repo2
 #
-#   Its four tabs all open at the story root, so a single agent sees every repo
-#   in the story at once:
+#   The story row carries four tabs at the story root, where one agent sees every
+#   repo in the story at once:
 #       notes   micro on the notes file of the first repo requested
 #       claude  $CLAUDE_CMD
 #       cursor  $CURSOR_CMD
 #       pwsh    bare shell
-#   Re-running for the same story reuses the workspace and adds only the tabs
-#   that are missing. Commands are submitted ONLY into tabs the run created, so
-#   a tab you are already working in is never typed into.
+#   Each repo row carries three tabs at that repo's worktree root:
+#       notes   micro on that repo's own notes file
+#       claude  $CLAUDE_CMD
+#       pwsh    bare shell
+#
+#   herdr has no real parent/child nesting - the sidebar is a flat list of
+#   spaces - so the indent is part of the repo row's label and the rows sit
+#   together because they are created back to back (the sidebar orders by
+#   creation). See Initialize-StoryWorkspace.
+#
+#   Re-running for the same story reuses every workspace it already has and adds
+#   only the tabs that are missing. Commands are submitted ONLY into tabs the run
+#   created, so a tab you are already working in is never typed into.
 #
 # Git behavior on create - THE SCRIPT OWNS THE BRANCH, NOT HERDR:
 #   `herdr worktree create --base <ref>` silently IGNORED --base when the local
@@ -82,9 +90,18 @@ $BRANCH_PREFIX = 'feature/aaron'
 $CLAUDE_CMD = 'claude --permission-mode auto'
 $CURSOR_CMD = 'agent --auto-review'
 
-# The tabs of a story workspace, in the order they are created. All four open at
-# the story root - the repos are sub-folders of it.
+# The tabs of the story workspace, in the order they are created. All four open
+# at the story root - the repos are sub-folders of it.
 $STORY_TABS = @('notes', 'claude', 'cursor', 'pwsh')
+
+# The tabs of each repo's own workspace, opened at that repo's worktree root.
+$REPO_TABS = @('notes', 'claude', 'pwsh')
+
+# Repo rows are indented under their story row in the sidebar. herdr has no real
+# parent/child nesting (see Initialize-StoryWorkspace), so the indent is part of
+# the label - keep it ASCII, a box-drawing character renders as mojibake in a
+# console that is not on a UTF-8 code page.
+$CHILD_LABEL_PREFIX = '  '
 
 # ===========================================================================
 $Type = if ($args.Count -ge 1) { $args[0] } else { '' }
@@ -289,35 +306,66 @@ function Get-PathKey([string]$Path) {
   return ($Path -replace '\\+', '/').TrimEnd('/').ToLowerInvariant()
 }
 
-# The story's workspace, or '' when it does not have one yet.
+function ConvertTo-PsLiteral([string]$Value) {
+  return "'" + ($Value -replace "'", "''") + "'"
+}
+
+# The workspace sitting at $Dir under $Label, or '' when there is none.
 #
-# Matched on the cwd of its panes, never on the label: a label is a display name
-# the user can change, and a development story and a review story of the same id
-# legitimately share one. Worktree workspaces are skipped outright - they belong
-# to a repo checkout, never to the story root (and they are what this script
-# stopped creating).
-function Find-StoryWorkspace {
+# Both halves are required. Path alone is not enough now that a story has child
+# workspaces one level down: a pane the user cd'd from the story root into a repo
+# would otherwise look exactly like that repo's own workspace, and the repo's
+# three tabs would be created in the story workspace instead. Label alone is not
+# enough either - a development story and a review story of the same id share
+# one. Together they are unambiguous.
+#
+# Worktree workspaces are skipped outright: they belong to a repo checkout
+# registered with herdr, which is what this script stopped creating.
+function Find-WorkspaceAt([string]$Dir, [string]$Label) {
   $json = Invoke-HerdrJson @('workspace', 'list')
   if ($null -eq $json) { return '' }
-  $want = Get-PathKey $script:STORY_DIR
+  $want = Get-PathKey $Dir
   if (-not $want) { return '' }
   foreach ($w in @($json.result.workspaces)) {
     if ($null -eq $w -or $null -ne $w.worktree) { continue }
+    if ("$($w.label)" -ne $Label) { continue }
     $ws = "$($w.workspace_id)"
     $panes = Invoke-HerdrJson @('pane', 'list', '--workspace', $ws)
     if ($null -eq $panes) { continue }
     foreach ($p in @($panes.result.panes)) {
       if ($null -eq $p) { continue }
-      $have = Get-PathKey "$($p.cwd)"
-      # "under" as well as "equal": a pane the user cd'd into a repo is still
-      # this story's workspace, and matching only the root would duplicate it.
-      if ($have -eq $want -or $have.StartsWith("$want/")) { return $ws }
+      if ((Get-PathKey "$($p.cwd)") -eq $want) { return $ws }
     }
   }
   return ''
 }
 
-function Get-StoryTabMap([string]$Ws) {
+# The repos of this story: the ones that were asked for first (so the row order
+# matches the order you typed), then anything else in the folder that turns out
+# to be a worktree - a repo added to the story by an earlier run, or by hand.
+function Get-StoryRepos {
+  $seen = @{}
+  $ordered = @()
+  foreach ($repo in $script:RepoOrder) {
+    if (-not $repo -or $seen.ContainsKey($repo)) { continue }
+    if (Test-Path -LiteralPath (Join-Path (Join-Path $script:STORY_DIR $repo) '.git')) {
+      $seen[$repo] = $true
+      $ordered += $repo
+    }
+  }
+  $extra = Get-ChildItem -LiteralPath $script:STORY_DIR -Directory -ErrorAction SilentlyContinue |
+    Sort-Object Name
+  foreach ($d in $extra) {
+    if ($seen.ContainsKey($d.Name)) { continue }
+    if (Test-Path -LiteralPath (Join-Path $d.FullName '.git')) {
+      $seen[$d.Name] = $true
+      $ordered += $d.Name
+    }
+  }
+  return $ordered
+}
+
+function Get-TabMap([string]$Ws) {
   $map = @{}
   $json = Invoke-HerdrJson @('tab', 'list', '--workspace', $Ws)
   if ($null -eq $json) { return $map }
@@ -329,46 +377,48 @@ function Get-StoryTabMap([string]$Ws) {
   return $map
 }
 
-# One workspace for the whole story, with the four story tabs at its root.
-# Cosmetic relative to the worktrees themselves: every failure in here warns and
-# carries on, because the checkouts on disk are already correct and usable.
+# Create-or-reuse the workspace at $Dir under $Label, holding exactly $TabNames,
+# and start $Commands (tab name -> command line) in it. Returns the workspace id,
+# or '' if herdr would not create it.
 #
-# Commands are only ever submitted into tabs THIS RUN created. Test-PaneReadyAndIdle
+# Cosmetic relative to the worktrees themselves: every failure warns and carries
+# on, because the checkouts on disk are already correct and usable either way.
+#
+# Commands are only ever submitted into tabs THIS CALL created. Test-PaneReadyAndIdle
 # is not enough on its own: herdr reports claude.exe in a busy pane but reports
 # only the shell for a pane sitting in micro, so a re-run that trusted the probe
 # would type "micro <path>" straight into the open notes buffer.
-function Initialize-StoryWorkspace {
-  $label = "$($script:ID)-$($script:SLUG)"
+function Initialize-Workspace([string]$Dir, [string]$Label, [string[]]$TabNames, [hashtable]$Commands) {
   $fresh = @{}
-  $ws = Find-StoryWorkspace
+  $ws = Find-WorkspaceAt $Dir $Label
   if ($ws) {
-    Write-Host "-> herdr:  reusing workspace $ws ($label)"
+    Write-Host "-> herdr:  reusing workspace $ws ($Label)"
   } else {
     $created = Invoke-HerdrJson @(
-      'workspace', 'create', '--cwd', $script:STORY_DIR, '--label', $label, '--no-focus'
+      'workspace', 'create', '--cwd', $Dir, '--label', $Label, '--no-focus'
     )
     $ws = if ($null -ne $created) { "$($created.result.workspace.workspace_id)" } else { '' }
     if (-not $ws) {
       if ($script:HerdrErr) { Write-Host $script:HerdrErr }
-      Write-Warning ("could not create the herdr workspace for $label - the worktrees " +
-        "are fine; open $($script:STORY_DIR) by hand")
-      return
+      Write-Warning ("could not create the herdr workspace for '$Label' - the worktrees " +
+        "are fine; open $Dir by hand")
+      return ''
     }
-    # A new workspace arrives with one numbered tab. Reuse it as the notes tab
-    # rather than leaving a stray "1" alongside four created ones.
+    # A new workspace arrives with one numbered tab. Reuse it as the first tab
+    # rather than leaving a stray "1" alongside the created ones.
     $rootTab = "$($created.result.tab.tab_id)"
-    if ($rootTab) {
-      Invoke-HerdrQuiet @('tab', 'rename', $rootTab, $STORY_TABS[0])
-      $fresh[$STORY_TABS[0]] = $true
+    if ($rootTab -and $TabNames.Count -gt 0) {
+      Invoke-HerdrQuiet @('tab', 'rename', $rootTab, $TabNames[0])
+      $fresh[$TabNames[0]] = $true
     }
-    Write-Host "-> herdr:  workspace $ws created at $($script:STORY_DIR)"
+    Write-Host "-> herdr:  workspace $ws created ($Label) at $Dir"
   }
 
-  $tabs = Get-StoryTabMap $ws
-  foreach ($name in $STORY_TABS) {
+  $tabs = Get-TabMap $ws
+  foreach ($name in $TabNames) {
     if ($tabs.ContainsKey($name)) { continue }
     $t = Invoke-HerdrJson @(
-      'tab', 'create', '--workspace', $ws, '--cwd', $script:STORY_DIR, '--label', $name, '--no-focus'
+      'tab', 'create', '--workspace', $ws, '--cwd', $Dir, '--label', $name, '--no-focus'
     )
     $id = if ($null -ne $t) { "$($t.result.tab.tab_id)" } else { '' }
     if ($id) {
@@ -379,20 +429,53 @@ function Initialize-StoryWorkspace {
     }
   }
 
-  $notes = Get-StoryNotesPath
-  if ($fresh['notes'] -and $tabs['notes'] -and $notes) {
-    $notesLit = "'" + ($notes -replace "'", "''") + "'"
-    Invoke-InTab $ws $tabs['notes'] $script:STORY_DIR "micro $notesLit"
+  foreach ($name in $TabNames) {
+    if (-not $fresh[$name] -or -not $tabs[$name]) { continue }
+    $cmd = "$($Commands[$name])"
+    if (-not $cmd) { continue }
+    Invoke-InTab $ws $tabs[$name] $Dir $cmd
   }
-  if ($fresh['claude'] -and $tabs['claude']) { Invoke-InTab $ws $tabs['claude'] $script:STORY_DIR $CLAUDE_CMD }
-  if ($fresh['cursor'] -and $tabs['cursor']) { Invoke-InTab $ws $tabs['cursor'] $script:STORY_DIR $CURSOR_CMD }
 
-  $notesName = if ($notes) { Split-Path -Leaf $notes } else { 'none' }
-  $started = @($STORY_TABS | Where-Object { $fresh[$_] })
-  $kept = @($STORY_TABS | Where-Object { -not $fresh[$_] })
-  Write-Host "-> tabs:   $($STORY_TABS -join ', ') at the story root (notes -> $notesName)"
+  $started = @($TabNames | Where-Object { $fresh[$_] })
+  $kept = @($TabNames | Where-Object { -not $fresh[$_] })
+  Write-Host "-> tabs:   $($TabNames -join ', ')"
   if ($started.Count -gt 0) { Write-Host "           started: $($started -join ', ')" }
   if ($kept.Count -gt 0) { Write-Host "           left as they were: $($kept -join ', ')" }
+  return $ws
+}
+
+# The story row, then one indented row per repo directly beneath it.
+#
+#     {id}-{slug}          story workspace, cwd = story folder
+#       repo1              repo workspace,  cwd = story/repo1
+#       repo2
+#
+# herdr has NO parent/child nesting: its sidebar is a flat list of spaces (only
+# worktree workspaces get grouped, and then always under their clone - the very
+# thing this replaced). The indent is therefore part of the label, and adjacency
+# comes from creating the repo rows immediately after their story row, since the
+# sidebar orders by creation. A repo added to an existing story lands at the
+# bottom of the list rather than under its story until herdr is restarted.
+function Initialize-StoryWorkspace {
+  $notes = Get-StoryNotesPath
+  $storyCmds = @{ claude = $CLAUDE_CMD; cursor = $CURSOR_CMD }
+  if ($notes) { $storyCmds['notes'] = "micro $(ConvertTo-PsLiteral $notes)" }
+  $notesName = if ($notes) { Split-Path -Leaf $notes } else { 'none' }
+  Write-Host "-> story:  workspace tabs at the story root (notes -> $notesName)"
+
+  $ws = Initialize-Workspace $script:STORY_DIR "$($script:ID)-$($script:SLUG)" $STORY_TABS $storyCmds
+  if (-not $ws) { return }
+
+  foreach ($repo in (Get-StoryRepos)) {
+    $dir = Join-Path $script:STORY_DIR $repo
+    $repoNotes = Get-RepoNotesPath $repo
+    $repoCmds = @{ claude = $CLAUDE_CMD }
+    if (Test-Path -LiteralPath $repoNotes) {
+      $repoCmds['notes'] = "micro $(ConvertTo-PsLiteral $repoNotes)"
+    }
+    Write-Host "-> repo:   $repo"
+    Initialize-Workspace $dir "$CHILD_LABEL_PREFIX$repo" $REPO_TABS $repoCmds | Out-Null
+  }
 }
 
 function Ask-Gum([string]$Prompt, [string]$Placeholder) {

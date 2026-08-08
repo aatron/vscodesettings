@@ -5,9 +5,10 @@ multi-repo story worktrees (dev and review). Bash source of truth lives in
 [`wsl/herdr/`](../../wsl/herdr/).
 
 > **Diverged from `wsl/herdr/`.** The Windows scripts are now **task-centric**:
-> one herdr workspace per story, repos as folders inside it. The bash scripts are
-> still repo-centric (one workspace per repo worktree, nested under its clone).
-> See [Story navigation](#story-navigation-one-workspace-per-task).
+> the story is the root row in the sidebar, with one indented row per repo under
+> it. The bash scripts are still repo-centric (one workspace per repo worktree,
+> nested under its clone).
+> See [Story navigation](#story-navigation-the-task-is-the-root-item).
 
 > **Windows beta.** Plugins are **preview**; `herdr --remote` is unsupported.
 > See [Windows beta](https://herdr.dev/docs/windows-beta/).
@@ -121,7 +122,7 @@ Seed Agent Usage when a Windows action exists (or from WSL):
 herdr plugin action invoke usagebar.setup
 ```
 
-## Story navigation: one workspace per task
+## Story navigation: the task is the root item
 
 The story folder on disk has always been task-first:
 
@@ -149,20 +150,23 @@ groups. `herdr worktree create --workspace <ID>` is not a way out: `--workspace`
 and `--cwd` are mutually exclusive, and `--workspace` only says which workspace
 to take the *source repo* from — it still creates a workspace of its own.
 
-So `worktree-make.ps1` adds the worktrees with plain `git worktree add` and gives
-the story **one ordinary workspace** whose cwd is the story folder. A workspace
-with no worktree metadata is not grouped at all, so the sidebar now reads one row
-per task, matching the folders:
+So `worktree-make.ps1` adds the worktrees with plain `git worktree add` and builds
+the rows itself. A workspace with no worktree metadata is not grouped at all, so
+the sidebar now reads task-first, matching the folders — a story row with one
+indented row per repo under it:
 
 ```
-{id}-{slug}
+{id}-{slug}                 cwd = the story folder
+  repo1                     cwd = {id}-{slug}\repo1
+  repo2                     cwd = {id}-{slug}\repo2
 {other-id}-{other-slug}
+  repo1
 ```
 
-### Worktree tabs
+### Tabs
 
-All four tabs open at the **story root**, so one agent sees every repo in the
-story at once (`cd repo1` from any of them).
+The **story row** carries four tabs at the story root, where one agent sees every
+repo in the story at once (`cd repo1` from any of them):
 
 | Tab | Command |
 |-----|---------|
@@ -171,21 +175,50 @@ story at once (`cd repo1` from any of them).
 | cursor | `agent --auto-review` |
 | pwsh | bare PowerShell |
 
-Re-running for the same story reuses the workspace, creates only the tabs that
-are missing, and starts commands **only in tabs it just created** — a tab you are
-already working in is never typed into.
+Each **repo row** carries three tabs at that repo's worktree root:
+
+| Tab | Command |
+|-----|---------|
+| notes | `micro <that repo's own notes file>` |
+| claude | `claude --permission-mode auto` |
+| pwsh | bare PowerShell |
+
+Repos are discovered by scanning the story folder for worktrees, so a repo added
+to an existing story picks up its own row on the next run. Re-running reuses every
+row it already has, creates only the tabs that are missing, and starts commands
+**only in tabs it just created** — a tab you are already working in is never typed
+into.
+
+### The nesting is cosmetic
+
+herdr has no parent/child workspaces. Its sidebar is a flat list of spaces, and
+the only automatic grouping is the repo grouping described above. So:
+
+* **The indent is part of the repo row's label** (`'  ' + repo`, set by
+  `$CHILD_LABEL_PREFIX` at the top of `worktree-make.ps1`). Keep it ASCII — a
+  box-drawing character renders as mojibake on a non-UTF-8 code page.
+* **Adjacency comes from creation order**, which is what the sidebar sorts by.
+  The repo rows are created back to back with their story row, so they sit
+  together. A repo added to an existing story lands at the **bottom** of the
+  sidebar rather than under its story until herdr is restarted.
+
+If you would rather not rely on that, the alternative is one tab per repo inside
+the single story workspace (`repo1 claude`, `repo2 claude`, …) — real containment,
+but the grouping then only shows in the agent panel, not the space list.
 
 ### What this gives up
 
-Story workspaces are not registered with herdr as worktrees, so:
+Story and repo workspaces are not registered with herdr as worktrees, so:
 
 * `herdr worktree remove` / the worktree picker do not see them.
-  `worktree-remove.ps1` closes the workspace and uses `git worktree remove`
-  instead (it still handles the old per-repo workspaces of existing stories).
+  `worktree-remove.ps1` closes every row of the story and uses `git worktree
+  remove` instead (it still handles the old per-repo workspaces of existing
+  stories).
 * [`worktree-layout.toml`](worktree-layout.toml) no longer fires for them. It is
   still installed and still correct for worktrees opened through herdr's own UI.
 * `branch` / `git_status` sidebar tokens are blank on a story row — there is no
-  single branch for a four-repo story. Keep the one-row layout:
+  single branch for a four-repo story. (They would work on a repo row, but the
+  same layout applies to every space.) Keep the one-row layout:
 
   ```toml
   [ui.sidebar.spaces]
@@ -230,9 +263,9 @@ herdr server reload-config
 2. Place test repos under `SRC_ROOT`.
 3. In herdr: **prefix+down** → **New Dev Worktree** (or invoke
    `quick-actions-windows`).
-4. Expect story under `<worktrees.directory>\development\<id>-<slug>\` with
-   notes + worktrees as above, and a **single** sidebar row `<id>-<slug>` holding
-   the four tabs.
+4. Expect story under `<worktrees.directory>\development\<id>-<slug>\` with notes
+   + worktrees as above, and sidebar rows `<id>-<slug>` (four tabs) followed by an
+   indented row per repo (three tabs each).
 
 Non-interactive (if test repos exist):
 
@@ -252,7 +285,7 @@ line proving it. It gets there by owning the branch itself rather than trusting
 `herdr worktree create --base`, which silently ignored `--base` whenever the
 local branch already existed and just checked it out wherever it happened to
 point. (The worktree is now added with `git worktree add` — see
-[Story navigation](#story-navigation-one-workspace-per-task) — but the branch is
+[Story navigation](#story-navigation-the-task-is-the-root-item) — but the branch is
 still positioned by this script, not by whatever checks it out.)
 
 What it does per repo:

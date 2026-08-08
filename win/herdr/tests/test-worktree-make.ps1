@@ -144,9 +144,10 @@ function Close-Workspaces {
   } catch { } finally { $ErrorActionPreference = $prev }
 }
 
-# Workspaces whose panes sit at (or under) $Path. Used to assert the story
-# topology: exactly one workspace per story, with the four story tabs.
-function Get-FixtureWorkspaces([string]$Path) {
+# Plain workspaces whose panes sit at $Path (-Exact) or anywhere under it.
+# Used to assert the story topology: the story row at the story folder, and one
+# repo row rooted at each repo inside it.
+function Get-FixtureWorkspaces([string]$Path, [switch]$Exact) {
   $prev = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   $found = @()
@@ -165,7 +166,8 @@ function Get-FixtureWorkspaces([string]$Path) {
       foreach ($p in $panes) {
         if ($null -eq $p) { continue }
         $have = ("$($p.cwd)" -replace '\\+', '/').TrimEnd('/').ToLowerInvariant()
-        if ($have -eq $want -or $have.StartsWith("$want/")) { $found += $w; break }
+        $hit = if ($Exact) { $have -eq $want } else { $have -eq $want -or $have.StartsWith("$want/") }
+        if ($hit) { $found += $w; break }
       }
     }
   } catch { } finally { $ErrorActionPreference = $prev }
@@ -413,7 +415,7 @@ Check 'good repo created' (Test-Path -LiteralPath (Join-Path (Story '99014' 'zz-
 
 # ---------------------------------------------------------------------------
 Write-Host ''
-Write-Host '15. story topology: ONE workspace for the whole story, four tabs at its root'
+Write-Host '15. story topology: story row with four tabs, one repo row under it per repo'
 Reset-Fixture
 $a = New-Repo 'aaa' 'main' 1
 $b = New-Repo 'bbb' 'main' 2
@@ -423,33 +425,82 @@ Check 'exit 0' ($res.Code -eq 0) "exit=$($res.Code)`n$($res.Out)"
 Check 'both repos are folders inside the story' `
   ((Test-Path -LiteralPath (Join-Path (Story '99015' 'zz-topo' 'aaa') '.git')) -and
    (Test-Path -LiteralPath (Join-Path (Story '99015' 'zz-topo' 'bbb') '.git'))) 'a repo is missing'
-$wss = @(Get-FixtureWorkspaces $storyDir)
-Check 'exactly one herdr workspace for the story' ($wss.Count -eq 1) "count=$($wss.Count)`n$($res.Out)"
-if ($wss.Count -eq 1) {
-  Check 'labeled {id}-{slug}' ("$($wss[0].label)" -eq '99015-zz-topo') "label=$($wss[0].label)"
+
+# The story row is rooted at the story folder itself, not at any repo in it.
+$story = @(Get-FixtureWorkspaces $storyDir -Exact)
+Check 'exactly one story workspace' ($story.Count -eq 1) "count=$($story.Count)`n$($res.Out)"
+if ($story.Count -eq 1) {
+  Check 'labeled {id}-{slug}' ("$($story[0].label)" -eq '99015-zz-topo') "label=$($story[0].label)"
   # The whole point: a workspace with worktree metadata gets nested under its
   # primary clone, which is the repo-centric layout this replaced.
-  Check 'not nested under a repo (no worktree metadata)' ($null -eq $wss[0].worktree) 'it is a worktree workspace'
-  $labels = @(Get-TabLabels $wss[0].workspace_id)
+  Check 'not nested under a repo (no worktree metadata)' ($null -eq $story[0].worktree) 'it is a worktree workspace'
+  $labels = @(Get-TabLabels $story[0].workspace_id)
   foreach ($want in @('notes', 'claude', 'cursor', 'pwsh')) {
-    Check "has a '$want' tab" ($labels -contains $want) "tabs=$($labels -join ',')"
+    Check "story has a '$want' tab" ($labels -contains $want) "tabs=$($labels -join ',')"
   }
-  Check 'no stray extra tab' ($labels.Count -eq 4) "tabs=$($labels -join ',')"
+  Check 'story has no stray extra tab' ($labels.Count -eq 4) "tabs=$($labels -join ',')"
+}
+
+foreach ($repo in @('aaa', 'bbb')) {
+  $rowDir = Story '99015' 'zz-topo' $repo
+  $row = @(Get-FixtureWorkspaces $rowDir -Exact)
+  Check "one workspace row for repo $repo" ($row.Count -eq 1) "count=$($row.Count)`n$($res.Out)"
+  if ($row.Count -ne 1) { continue }
+  Check "$repo row label is indented" ("$($row[0].label)" -eq "  $repo") "label=[$($row[0].label)]"
+  $rl = @(Get-TabLabels $row[0].workspace_id)
+  foreach ($want in @('notes', 'claude', 'pwsh')) {
+    Check "$repo row has a '$want' tab" ($rl -contains $want) "tabs=$($rl -join ',')"
+  }
+  Check "$repo row has exactly three tabs" ($rl.Count -eq 3) "tabs=$($rl -join ',')"
+  Check "$repo row has no cursor tab" (-not ($rl -contains 'cursor')) "tabs=$($rl -join ',')"
+}
+
+# Sidebar order is creation order, so the repo rows have to follow their story
+# row directly - that adjacency is the only thing making the indent read as
+# nesting.
+$all = @(Get-FixtureWorkspaces $storyDir)
+Check 'three rows in total (story + 2 repos)' ($all.Count -eq 3) "count=$($all.Count)"
+if ($all.Count -eq 3) {
+  $byNum = @($all | Sort-Object number)
+  Check 'story row comes first' ("$($byNum[0].label)" -eq '99015-zz-topo') "order=$(($byNum.label) -join ' | ')"
+  Check 'repo rows follow it, in the order requested' `
+    (("$($byNum[1].label)" -eq '  aaa') -and ("$($byNum[2].label)" -eq '  bbb')) `
+    "order=$(($byNum.label) -join ' | ')"
+  Check 'rows are consecutive (nothing wedged between them)' `
+    (($byNum[2].number - $byNum[0].number) -eq 2) "numbers=$(($byNum.number) -join ',')"
 }
 Check 'no per-repo worktree workspace was registered' `
   ((Get-WorktreeWorkspacesUnder $storyDir).Count -eq 0) 'a repo-level worktree workspace exists'
 
 # ---------------------------------------------------------------------------
 Write-Host ''
-Write-Host '16. re-running the same story reuses its workspace (no duplicate)'
+Write-Host '16. re-running the same story reuses every row (no duplicates)'
 $res = Invoke-Make 'development' @{ WT_ID = '99015'; WT_SLUG = 'zz-topo'; WT_REPOS = 'aaa,bbb' }
-$wss2 = @(Get-FixtureWorkspaces $storyDir)
+$all2 = @(Get-FixtureWorkspaces $storyDir)
 Check 'exit 3 (nothing to do)' ($res.Code -eq 3) "exit=$($res.Code)`n$($res.Out)"
-Check 'still exactly one workspace' ($wss2.Count -eq 1) "count=$($wss2.Count)`n$($res.Out)"
-Check 'same workspace id' (($wss.Count -eq 1) -and ($wss2.Count -eq 1) -and
-  ($wss2[0].workspace_id -eq $wss[0].workspace_id)) 'a second workspace was created'
-Check 'said it reused it' ($res.Out -match 'reusing workspace') "no reuse line`n$($res.Out)"
-Check 'still four tabs' ((@(Get-TabLabels $wss2[0].workspace_id)).Count -eq 4) 'tab count changed'
+Check 'still three rows' ($all2.Count -eq 3) "count=$($all2.Count)`n$($res.Out)"
+Check 'same workspace ids' `
+  ((($all.workspace_id | Sort-Object) -join ',') -eq (($all2.workspace_id | Sort-Object) -join ',')) `
+  "before=$(($all.workspace_id) -join ',') after=$(($all2.workspace_id) -join ',')"
+Check 'said it reused them' `
+  (([regex]::Matches($res.Out, 'reusing workspace')).Count -eq 3) "reuse lines`n$($res.Out)"
+Check 'tab counts unchanged' `
+  ((@(Get-TabLabels ($all2 | Where-Object { $_.label -eq '99015-zz-topo' }).workspace_id).Count -eq 4) -and
+   (@(Get-TabLabels ($all2 | Where-Object { $_.label -eq '  aaa' }).workspace_id).Count -eq 3)) 'tab count changed'
+
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '17. a repo added to an existing story gets its own row'
+$c = New-Repo 'ccc' 'main' 1
+$res = Invoke-Make 'development' @{ WT_ID = '99015'; WT_SLUG = 'zz-topo'; WT_REPOS = 'aaa,bbb,ccc' }
+$all3 = @(Get-FixtureWorkspaces $storyDir)
+Check 'exit 0 (one repo created)' ($res.Code -eq 0) "exit=$($res.Code)`n$($res.Out)"
+Check 'four rows now' ($all3.Count -eq 4) "count=$($all3.Count)`n$($res.Out)"
+$ccc = @($all3 | Where-Object { $_.label -eq '  ccc' })
+Check 'ccc has its own row' ($ccc.Count -eq 1) "count=$($ccc.Count)"
+if ($ccc.Count -eq 1) {
+  Check 'ccc row has three tabs' ((@(Get-TabLabels $ccc[0].workspace_id)).Count -eq 3) 'wrong tab count'
+}
 
 # ---------------------------------------------------------------------------
 # Cleanup order matters, and one pass is not enough. herdr keeps a workspace for
